@@ -1,0 +1,21 @@
+[Unit]
+Description=Trixie AI gateway daemon (PC side of the yayos-apk phone app)
+Documentation=file:/aufs/devbase/trixie-gateway/README.md
+After=network.target sound.target
+
+[Service]
+Type=simple
+# snd-aloop is only needed for audio streaming to the phone; ignore if absent
+ExecStartPre=-/sbin/modprobe snd-aloop
+ExecStart=/root/pyqt6-venv/bin/python /aufs/devbase/trixie-gateway/gateway.py --port 8772
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+RuntimeDirectory=trixie-gateway
+KillMode=mixed
+# Enable audio tee to phone ONLY after installing porting/99-yayos-fdtee.conf
+# and changing its hw:Audio,0 to this box's card name (aplay -l):
+#Environment=ALSA_PCMOUT=fdtee
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+# trixie-gateway runtime deps — install into /root/pyqt6-venv
+#   /root/pyqt6-venv/bin/pip install -r requirements.txt
+aiohttp>=3.9
+aiortc>=1.14
+av>=13
+cryptography>=42
+pylibsrtp>=1.10
+aioice>=0.9
+dnspython>=2.6
+ifaddr>=0.2
+pyee>=12
