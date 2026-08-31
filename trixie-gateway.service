@@ -5,6 +5,12 @@ After=network.target sound.target
 
 [Service]
 Type=simple
+# Needed for webrtc_screen's x11grab: systemd doesn't inherit the X
+# session's environment, so without these the screen capture fails with
+# "Authorization required, but no authorization protocol specified"
+# (av.error.OSError: Input/output error) on every /yay/webrtc/offer call.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/root/.Xauthority
 # snd-aloop is only needed for audio streaming to the phone; ignore if absent
 ExecStartPre=-/sbin/modprobe snd-aloop
 ExecStart=/root/pyqt6-venv/bin/python /aufs/devbase/trixie-gateway/gateway.py --port 8772

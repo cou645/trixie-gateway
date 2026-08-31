@@ -76,6 +76,29 @@ Off by default. To enable the WebRTC audio tee:
    test, or do the tee at the PipeWire layer.
 3. Uncomment `Environment=ALSA_PCMOUT=fdtee` in `trixie-gateway.service`.
 
+## X11 auth for the systemd unit (fixed 2026-08-31)
+
+`webrtc_screen.py`'s x11grab capture needs `DISPLAY`/`XAUTHORITY` --
+systemd doesn't inherit the interactive X session's environment the way
+a login shell does, so without these set explicitly, every
+`POST /yay/webrtc/offer` failed with `av.error.OSError: Input/output
+error` (`Authorization required, but no authorization protocol
+specified` in the log). Manual runs (`DISPLAY=:0 python gateway.py`)
+never hit this, since they inherit a working X auth from whatever shell
+started them -- only the systemd-launched process was affected. The
+unit now sets both explicitly:
+
+```
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/root/.Xauthority
+```
+
+Verified against the live restarted service: two real WebRTC clients
+over actual HTTP (`/yay/webrtc/offer` → `/yay/webrtc/answer`) both
+received real decoded frames (953/303 over 4s), `/yay/webrtc/peers`
+tracked both correctly, and closing one at a time released the shared
+video/audio capture cleanly with no errors in the log.
+
 ## Known snag (2026-08-29)
 
 The systemd unit is **installed but disabled**. An earlier draft of the unit had
