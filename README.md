@@ -44,7 +44,7 @@ curl -s http://127.0.0.1:8772/yay/health
 ```
 
 The unit is already installed at `/etc/systemd/system/trixie-gateway.service`
-(currently **disabled** — see "Known snag" below).
+and **enabled** (starts on boot — see "Known snag" below for the history).
 
 Phone app gateway URL: `http://<tailscale0-ip>:8772` (`ip addr show tailscale0`).
 
@@ -99,20 +99,17 @@ received real decoded frames (953/303 over 4s), `/yay/webrtc/peers`
 tracked both correctly, and closing one at a time released the shared
 video/audio capture cleanly with no errors in the log.
 
-## Known snag (2026-08-29)
+## Known snag (2026-08-29) — resolved 2026-08-31
 
-The systemd unit is **installed but disabled**. An earlier draft of the unit had
+The systemd unit was **installed but disabled** because an earlier draft had
 `ExecStartPre=… fuser -k 8772/tcp`; `fuser` wedged in **`D` state inside TOMOYO
 LSM** (`tomoyo_write_file`, learning-table saturated, no `tomoyo-queryd` running)
-and is unkillable, stuck in the service's cgroup — so systemd enters *failed
-mode* on every start. **This clears on reboot.** After a reboot:
+and was unkillable, stuck in the service's cgroup — so systemd entered *failed
+mode* on every start.
 
-```sh
-systemctl enable --now trixie-gateway
-```
-
-The current unit has **no `fuser`**. The daemon itself is verified working
-(standalone: `/yay/health`, `/yay/system`, `/yay/network/interfaces` all 200,
-clean SIGTERM). Until reboot, run it directly with the venv command above.
+The current unit has **no `fuser`**, and is now `systemctl enable`d
+(`enabled`/`active`, survives reboot via `multi-user.target`) — confirmed via
+`systemctl is-enabled`/`is-active` after a fresh `enable` + restart, no TOMOYO
+issue hit.
 
 Avoid `fuser` on this box generally while TOMOYO learning is saturated.
