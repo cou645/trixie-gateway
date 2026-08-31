@@ -31,6 +31,33 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, AudioStreamTrack, V
 
 LOG = logging.getLogger("trixie-gateway.webrtc")
 
+
+def _clone_frame(frame: av.VideoFrame) -> av.VideoFrame:
+    """Returns an independent copy of frame, safe for one peer to mutate
+    (.pts/.time_base) without racing every other peer sharing the same
+    source frame -- see X11ScreenTrack.recv().
+
+    Without this, every X11ScreenTrack.recv() mutated .pts/.time_base
+    directly on the ONE shared _latest_frame from SharedX11Capture. Fine
+    for one peer; with two or more, their independent RTCRtpSenders each
+    encode that same object on their own background thread, racing --
+    confirmed as a real crash (av.error.InvalidDataError) in the
+    Desktop-Classroom prototype's identical code, via a real two-peer
+    WebRTC test (see its streaming/test_wall.py and streaming/capture.py).
+
+    frame.reformat() looked like the obvious way to get a copy, but it
+    short-circuits and returns the *same* object whenever nothing would
+    actually change (same width/height/format) -- confirmed via a quick
+    interactive check, not documented behavior to rely on. This copies
+    each plane's raw bytes into a fresh VideoFrame instead, which works
+    regardless of pixel format (including x11grab's native bgr0, which
+    av's to_ndarray()/from_ndarray() don't support)."""
+    clone = av.VideoFrame(width=frame.width, height=frame.height,
+                           format=frame.format.name)
+    for i, plane in enumerate(frame.planes):
+        clone.planes[i].update(bytes(plane))
+    return clone
+
 _DISPLAY   = os.environ.get("DISPLAY", ":0")
 _FRAMERATE = 20
 _WIDTH     = 1280
@@ -167,6 +194,7 @@ class X11ScreenTrack(VideoStreamTrack):
     async def recv(self):
         frame, seq = await _shared_video.wait_for_frame(self._last_seq_seen)
         self._last_seq_seen = seq
+        frame = _clone_frame(frame)
         frame.pts = self._pts
         frame.time_base = self._time_base
         self._pts += 1
