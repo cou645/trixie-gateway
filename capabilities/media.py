@@ -1,9 +1,21 @@
-"""Media capability — yay --media control via pipe IPC (multi-session)."""
+"""Media capability — yay --media (pipe IPC), Chameleon-Media-Center /
+MPV-Media-Center (mpv --input-ipc-server JSON socket), and VLC (detection
+only — no control channel confirmed available) — multi-session, multi-
+backend.
+
+Backend note: yay --media sessions have no player-reported position/
+duration/volume/play-state at all (gstreamer side never exposed it over
+the pipe protocol) — those fields are always None for "yay_media" sessions
+and always populated for "mpv_ipc" ones, where mpv's own IPC socket gives
+real values. Callers should treat absence as "unknown", not "zero".
+"""
 
 import asyncio
 import os
 import re
 from pathlib import Path
+
+from . import mpv_ipc
 
 _MEDIA_DIR  = Path("/mnt/sda2/YaYOS/layers/base/root/media")
 if not _MEDIA_DIR.is_dir():
@@ -19,7 +31,14 @@ _LAUNCHED: dict[int, asyncio.StreamWriter] = {}
 
 # ── proc scanning ─────────────────────────────────────────────────────────────
 
-def _all_sessions() -> list[dict]:
+async def _all_sessions() -> list[dict]:
+    sessions = _yay_media_sessions()
+    sessions += await _mpv_ipc_sessions()
+    sessions += _vlc_sessions()
+    return sessions
+
+
+def _yay_media_sessions() -> list[dict]:
     sessions = []
     for p in sorted(Path("/proc").iterdir(), key=lambda x: x.name):
         if not p.name.isdigit():
@@ -57,6 +76,7 @@ def _all_sessions() -> list[dict]:
 
         sessions.append({
             "pid":          pid,
+            "backend":      "yay_media",
             "title":        title,
             "source":       source,
             "device":       device,
@@ -65,6 +85,133 @@ def _all_sessions() -> list[dict]:
             "controllable": controllable,
             "writer_pid":   writer_pid,
             "audio_active": _audio_active(pid),
+            "playing":      None,
+            "position":     None,
+            "duration":     None,
+            "volume":       None,
+        })
+    return sessions
+
+
+def _mpv_ipc_socket_for_pid(pid: int) -> str | None:
+    """Re-derive the --input-ipc-server socket path from /proc each call
+    rather than caching — matches this module's existing convention
+    (_find_writer also re-scans /proc fresh every time) and stays correct
+    across mpv restarts without needing invalidation logic."""
+    try:
+        raw = (Path(f"/proc/{pid}/cmdline")
+               .read_bytes().replace(b"\x00", b" ").decode(errors="replace"))
+    except OSError:
+        return None
+    if "mpv" not in raw:
+        return None
+    m = re.search(r"--input-ipc-server=(\S+)", raw)
+    return m.group(1) if m else None
+
+
+async def _mpv_ipc_sessions() -> list[dict]:
+    sessions = []
+    for p in sorted(Path("/proc").iterdir(), key=lambda x: x.name):
+        if not p.name.isdigit():
+            continue
+        pid = int(p.name)
+        try:
+            comm = (p / "comm").read_text().strip()
+        except OSError:
+            continue
+        if comm != "mpv":
+            continue
+        socket_path = _mpv_ipc_socket_for_pid(pid)
+        if not socket_path:
+            continue
+        status = await mpv_ipc.get_status(socket_path)
+        if status is None:
+            continue  # mpv process exists but IPC socket isn't answering
+
+        path = status.get("path")
+        title = status.get("media_title") or (Path(path).name if path else None) or "mpv"
+        # Identify the launching app (Chameleon-Media-Center.py, MPV-Media-
+        # Center-*.py, or a bare manual mpv) from the parent process, purely
+        # for a friendlier "source" label — control only ever needs the pid.
+        source = "mpv"
+        try:
+            ppid_line = (Path(f"/proc/{pid}/status").read_text()
+                         .splitlines())
+            ppid = next((int(l.split()[1]) for l in ppid_line if l.startswith("PPid:")), None)
+            if ppid:
+                parent_raw = (Path(f"/proc/{ppid}/cmdline")
+                              .read_bytes().replace(b"\x00", b" ").decode(errors="replace"))
+                if "Chameleon-Media-Center" in parent_raw:
+                    source = "chameleon-media-center"
+                elif "MPV-Media-Center" in parent_raw:
+                    source = "mpv-media-center"
+        except OSError:
+            pass
+
+        sessions.append({
+            "pid":          pid,
+            "backend":      "mpv_ipc",
+            "title":        title,
+            "source":       source,
+            "device":       None,
+            "current_file": path,
+            "has_listen":   True,
+            "controllable": True,
+            "writer_pid":   None,
+            "audio_active": not bool(status.get("mute")) and not bool(status.get("pause")),
+            "playing":      (not status.get("pause")) if not status.get("idle_active") else False,
+            "position":     status.get("time_pos"),
+            "duration":     status.get("duration"),
+            # mpv's volume property is 0-100 (>100 possible with boost);
+            # normalise to the same 0.0-1.0 scale set_volume() already uses
+            # for yay_media sessions so callers don't need to know the
+            # backend to interpret this field.
+            "volume":       (status.get("volume") / 100.0) if status.get("volume") is not None else None,
+        })
+    return sessions
+
+
+def _vlc_sessions() -> list[dict]:
+    """Detection only — VLC isn't installed on this box as of writing so
+    this is unverified against a live instance. No control channel is
+    wired up (would need --extraintf rc/http enabled at launch, or the
+    D-Bus MPRIS2 interface VLC exposes by default on most distro builds —
+    neither confirmed available here). Sessions show up as not
+    controllable until one of those is actually implemented and tested."""
+    sessions = []
+    for p in sorted(Path("/proc").iterdir(), key=lambda x: x.name):
+        if not p.name.isdigit():
+            continue
+        pid = int(p.name)
+        try:
+            comm = (p / "comm").read_text().strip()
+        except OSError:
+            continue
+        if comm != "vlc":
+            continue
+        try:
+            raw = (p / "cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+        except OSError:
+            raw = ""
+        args = [a for a in raw.split(" ") if a and not a.startswith("-")]
+        current_file = args[-1] if len(args) > 1 else None
+        title = Path(current_file).name if current_file else "VLC"
+
+        sessions.append({
+            "pid":          pid,
+            "backend":      "vlc",
+            "title":        title,
+            "source":       "vlc",
+            "device":       None,
+            "current_file": current_file,
+            "has_listen":   False,
+            "controllable": False,
+            "writer_pid":   None,
+            "audio_active": _audio_active(pid),
+            "playing":      None,
+            "position":     None,
+            "duration":     None,
+            "volume":       None,
         })
     return sessions
 
@@ -164,43 +311,33 @@ async def _send(cmd: str, pid: int) -> bool:
     return False
 
 
-# ── resolve session ───────────────────────────────────────────────────────────
-
-def _resolve_pid(pid: int | None) -> int | None:
-    sessions = _all_sessions()
-    if pid is not None:
-        return pid if any(s["pid"] == pid for s in sessions) else None
-    # default: first controllable
-    for s in sessions:
-        if s["controllable"]:
-            return s["pid"]
-    return None
-
-
 # ── public API ────────────────────────────────────────────────────────────────
 
 async def list_sessions() -> list[dict]:
-    return _all_sessions()
+    return await _all_sessions()
 
 
 async def get_status(pid: int | None = None) -> dict:
-    sessions = _all_sessions()
+    sessions = await _all_sessions()
     if pid is not None:
         s = next((s for s in sessions if s["pid"] == pid), None)
         return s or {"running": False, "pid": pid}
     return {"sessions": sessions, "count": len(sessions)}
 
 
-async def _cmd(cmd: str, pid: int | None = None) -> dict:
-    sessions = _all_sessions()
+async def _find_session(pid: int | None) -> dict | None:
+    sessions = await _all_sessions()
     if pid is not None:
-        session = next((s for s in sessions if s["pid"] == pid), None)
-        if session is None:
-            return {"ok": False, "error": f"no media session with pid {pid}"}
-    else:
-        session = next((s for s in sessions if s["controllable"]), None)
-        if session is None:
-            return {"ok": False, "error": "no controllable media session found"}
+        return next((s for s in sessions if s["pid"] == pid), None)
+    return next((s for s in sessions if s["controllable"]), None)
+
+
+async def _cmd(cmd: str, pid: int | None = None) -> dict:
+    """yay_media (gstreamer) control path — pipe-based text commands."""
+    session = await _find_session(pid)
+    if session is None:
+        return {"ok": False, "error": f"no media session with pid {pid}"} \
+            if pid is not None else {"ok": False, "error": "no controllable media session found"}
     target = session["pid"]
     ok = await _send(cmd, target)
     if not ok:
@@ -213,15 +350,55 @@ async def _cmd(cmd: str, pid: int | None = None) -> dict:
     return {"ok": True, "pid": target}
 
 
-async def play(pid: int | None = None)  -> dict: return await _cmd("play",  pid)
-async def pause(pid: int | None = None) -> dict: return await _cmd("pause", pid)
-async def stop(pid: int | None = None)  -> dict: return await _cmd("stop",  pid)
+async def _mpv_cmd(action: str, pid: int, **kwargs) -> dict:
+    """mpv_ipc (CMC / MPV-Media-Center) control path — JSON socket commands."""
+    socket_path = _mpv_ipc_socket_for_pid(pid)
+    if socket_path is None:
+        return {"ok": False, "pid": pid, "error": "mpv IPC socket not found for this pid"}
+    if action == "play":
+        ok = await mpv_ipc.set_property(socket_path, "pause", False)
+    elif action == "pause":
+        ok = await mpv_ipc.set_property(socket_path, "pause", True)
+    elif action == "stop":
+        ok = await mpv_ipc.run_command(socket_path, "stop")
+    elif action == "volume":
+        ok = await mpv_ipc.set_property(socket_path, "volume", kwargs["value"] * 100.0)
+    elif action == "seek":
+        ok = await mpv_ipc.run_command(socket_path, "seek", kwargs["value"], "absolute")
+    elif action == "open":
+        ok = await mpv_ipc.run_command(socket_path, "loadfile", kwargs["path"], "replace")
+    else:
+        return {"ok": False, "pid": pid, "error": f"unknown mpv action: {action}"}
+    if not ok:
+        return {"ok": False, "pid": pid, "error": "mpv IPC command failed"}
+    return {"ok": True, "pid": pid}
+
+
+async def _dispatch(pid: int | None, yay_cmd: str, mpv_action: str, **mpv_kwargs) -> dict:
+    """Route a control action to the right backend based on which kind of
+    session `pid` (or the default controllable session) actually is."""
+    session = await _find_session(pid)
+    if session is None:
+        return {"ok": False, "error": f"no media session with pid {pid}"} \
+            if pid is not None else {"ok": False, "error": "no controllable media session found"}
+    if session["backend"] == "mpv_ipc":
+        return await _mpv_cmd(mpv_action, session["pid"], **mpv_kwargs)
+    if session["backend"] == "yay_media":
+        return await _cmd(yay_cmd, session["pid"])
+    return {"ok": False, "pid": session["pid"],
+            "error": f"backend '{session['backend']}' has no control channel wired up yet"}
+
+
+async def play(pid: int | None = None)  -> dict: return await _dispatch(pid, "play",  "play")
+async def pause(pid: int | None = None) -> dict: return await _dispatch(pid, "pause", "pause")
+async def stop(pid: int | None = None)  -> dict: return await _dispatch(pid, "stop",  "stop")
 
 async def set_volume(v: float, pid: int | None = None) -> dict:
-    return await _cmd(f"volume {max(0.0, min(1.0, v)):.2f}", pid)
+    v = max(0.0, min(1.0, v))
+    return await _dispatch(pid, f"volume {v:.2f}", "volume", value=v)
 
 async def seek(seconds: float, pid: int | None = None) -> dict:
-    return await _cmd(f"seek {int(seconds)}", pid)
+    return await _dispatch(pid, f"seek {int(seconds)}", "seek", value=seconds)
 
 async def open_file(path: str, pid: int | None = None) -> dict:
     p = Path(path)
@@ -229,8 +406,8 @@ async def open_file(path: str, pid: int | None = None) -> dict:
         return {"ok": False, "error": f"file not found: {path}"}
 
     if pid is not None:
-        # Caller wants to replace the file in a specific running session via stdin
-        result = await _cmd(f"open {p}", pid)
+        # Caller wants to replace the file in a specific running session
+        result = await _dispatch(pid, f"open {p}", "open", path=str(p))
         if result.get("ok"):
             _record_played(path)
         return result
@@ -350,9 +527,21 @@ async def browse(path: str | None = None) -> dict:
 
 async def kill_session(pid: int) -> dict:
     import signal as _signal
-    sessions = _all_sessions()
-    if not any(s["pid"] == pid for s in sessions):
+    session = next((s for s in await _all_sessions() if s["pid"] == pid), None)
+    if session is None:
         return {"ok": False, "error": f"no media session with pid {pid}"}
+
+    # mpv IPC has its own graceful "quit" command — prefer it over SIGTERM
+    # so mpv can clean up (release the audio device, close cleanly) instead
+    # of just dying. Note: for a Chameleon-Media-Center session this kills
+    # mpv itself, not the CMC app — CMC's window keeps running with a now-
+    # empty video panel, same as if the user closed the file from within it.
+    if session["backend"] == "mpv_ipc":
+        socket_path = _mpv_ipc_socket_for_pid(pid)
+        if socket_path and await mpv_ipc.run_command(socket_path, "quit"):
+            return {"ok": True, "pid": pid}
+        # fall through to SIGTERM if IPC quit didn't work
+
     writer = _LAUNCHED.pop(pid, None)
     if writer:
         try:

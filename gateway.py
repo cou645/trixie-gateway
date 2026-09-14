@@ -149,6 +149,7 @@ class TrixieGateway:
         # Network
         app.router.add_get( "/yay/network/status",          self._net_status)
         app.router.add_get( "/yay/network/interfaces",      self._net_interfaces)
+        app.router.add_get( "/yay/network/tailscale_peers", self._net_tailscale_peers)
         app.router.add_get( "/yay/network/wifi/scan",       self._wifi_scan)
         app.router.add_post("/yay/network/wifi/connect",    self._wifi_connect)
         app.router.add_post("/yay/network/wifi/disconnect", self._wifi_disconnect)
@@ -431,6 +432,44 @@ class TrixieGateway:
             return web.json_response({"interfaces": [], "error": "ip command failed"})
         ifaces = _parse_ip_addr(out)
         return web.json_response({"interfaces": ifaces})
+
+    async def _net_tailscale_peers(self, req: web.Request) -> web.Response:
+        rc, out, err = await _run_cmd(["tailscale", "status", "--json"])
+        if rc != 0:
+            return web.json_response({"peers": [], "error": err.strip() or "tailscale status failed"})
+        try:
+            status = json.loads(out)
+        except json.JSONDecodeError:
+            return web.json_response({"peers": [], "error": "could not parse tailscale status"})
+
+        def _peer_entry(node: dict, is_self: bool) -> dict | None:
+            # Exit-node relays (Mullvad etc.) report no OS and aren't real
+            # devices — filtering on OS keeps this to actual tailnet members.
+            if not node.get("OS"):
+                return None
+            ip = next((a for a in node.get("TailscaleIPs", []) if "." in a), None)
+            if ip is None:
+                return None
+            return {
+                "hostname": node.get("HostName", ip),
+                "ip":       ip,
+                "os":       node.get("OS", ""),
+                "online":   bool(node.get("Online", is_self)),
+                "self":     is_self,
+            }
+
+        peers = []
+        self_node = status.get("Self")
+        if self_node:
+            entry = _peer_entry(self_node, is_self=True)
+            if entry:
+                peers.append(entry)
+        for node in (status.get("Peer") or {}).values():
+            entry = _peer_entry(node, is_self=False)
+            if entry:
+                peers.append(entry)
+        peers.sort(key=lambda p: (not p["self"], not p["online"], p["hostname"]))
+        return web.json_response({"peers": peers})
 
     async def _wifi_scan(self, req: web.Request) -> web.Response:
         iface = req.rel_url.query.get("iface", self.wifi_iface)
@@ -796,9 +835,13 @@ class TrixieGateway:
         width  = int(body.get("width",  1280))
         height = int(body.get("height", 800))
         fps    = int(body.get("fps",    20))
-        result = await webrtc_screen.create_offer(width=width, height=height, fps=fps)
+        video  = bool(body.get("video", True))
+        audio  = bool(body.get("audio", True))
+        result = await webrtc_screen.create_offer(
+            width=width, height=height, fps=fps, video=video, audio=audio)
         if result.get("ok"):
-            self.journal.append("webrtc_offer", f"{width}x{height}@{fps}")
+            kind = "audio-only" if not video else f"{width}x{height}@{fps}"
+            self.journal.append("webrtc_offer", kind)
         return web.json_response(result)
 
     async def _webrtc_answer(self, req: web.Request) -> web.Response:

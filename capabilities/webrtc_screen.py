@@ -324,19 +324,29 @@ class AlsaAudioTrack(AudioStreamTrack):
 # ── public API (unchanged signatures) ────────────────────────────────────────
 
 async def create_offer(
-    width: int  = _WIDTH,
-    height: int = _HEIGHT,
-    fps: int    = _FRAMERATE,
-    audio: bool = True,
+    width: int   = _WIDTH,
+    height: int  = _HEIGHT,
+    fps: int     = _FRAMERATE,
+    audio: bool  = True,
+    video: bool  = True,
 ) -> dict:
-    """Create a WebRTC peer, attach shared X11 screen + audio tracks, return SDP offer."""
+    """Create a WebRTC peer, attach shared X11 screen + audio tracks, return
+    SDP offer. video=False skips the screen-capture track entirely (not
+    just hiding it — the ffmpeg x11grab pipeline never starts) for an
+    audio-only peer, e.g. "listen to the desktop on my phone" from the
+    Audio screen, as opposed to the full remote-desktop screen share."""
+    if not video and not audio:
+        return {"ok": False, "error": "at least one of video/audio must be true"}
+
     pc = RTCPeerConnection()
     peer_id = f"peer-{int(time.time()*1000)}"
     _peers[peer_id] = pc
 
-    await _shared_video.acquire(_DISPLAY, width, height, fps)
-    track = X11ScreenTrack(framerate=fps)
-    pc.addTrack(track)
+    _peer_video[peer_id] = video
+    if video:
+        await _shared_video.acquire(_DISPLAY, width, height, fps)
+        track = X11ScreenTrack(framerate=fps)
+        pc.addTrack(track)
 
     peer_has_audio = False
     if audio:
@@ -402,6 +412,7 @@ async def list_peers() -> list[dict]:
 
 
 _peer_audio: dict[str, bool] = {}
+_peer_video: dict[str, bool] = {}
 
 
 async def _close(peer_id: str):
@@ -413,10 +424,12 @@ async def _close(peer_id: str):
         # capture refcounts for one logical peer disconnect.
         return
     had_audio = _peer_audio.pop(peer_id, False)
+    had_video = _peer_video.pop(peer_id, True)  # True: pre-existing peers from before this flag existed
     try:
         await pc.close()
     except Exception:
         pass
-    await _shared_video.release()
+    if had_video:
+        await _shared_video.release()
     if had_audio:
         await _shared_audio.release()
