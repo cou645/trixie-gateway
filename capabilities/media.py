@@ -17,10 +17,16 @@ from pathlib import Path
 
 from . import mpv_ipc
 
-_MEDIA_DIR  = Path("/mnt/sda2/YaYOS/layers/base/root/media")
+_MEDIA_DIR = Path("/mnt/sda2/YaYOS/layers/base/root/media")
 if not _MEDIA_DIR.is_dir():
-    # fatdog64-style /aufs stacking fallback (cross-distro)
-    _MEDIA_DIR = Path("/aufs/devbase/YaYOS/layers/base/root/media")
+    # Union-fs stacking fallback: Fatdog64-derived distros (this box
+    # included) mount under /aufs, standard Puppy Linux under /initrd —
+    # no /aufs directory exists there at all. Try both.
+    for _root in ("/aufs/devbase", "/initrd/devbase"):
+        _candidate = Path(_root) / "YaYOS" / "layers" / "base" / "root" / "media"
+        if _candidate.is_dir():
+            _MEDIA_DIR = _candidate
+            break
 _DISPLAY    = os.environ.get("DISPLAY", ":0")
 _MEDIA_EXTS = {".mp3", ".mp4", ".wav", ".ogg", ".flac", ".mkv",
                ".avi", ".webm", ".m4a", ".aac", ".opus"}

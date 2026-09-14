@@ -1,9 +1,17 @@
-"""Layer control capability — list AUFS branches (Fatdog64).
+"""Layer control capability — list AUFS/union branches (Fatdog64 / Puppy family).
 
-Fatdog64 builds its root with AUFS union branches:
+Fatdog64 (this box) and vanilla Puppy Linux both build their root with the
+same style of union-fs branches, just mounted under a different root:
+Fatdog64-derived distros (this one included) use /aufs/*, standard Puppy
+uses /initrd/* instead — there's no /aufs directory there at all. Detected
+at runtime from /proc/mounts rather than assumed, so this works on both
+without a config flag (untested on real Puppy — based on documented Puppy
+mount conventions, not verified against a live system the way the
+Fattdog64/aufs path has been on this box).
+
   pup_init   — initial tmpfs (ro, always active)
   kernel-modules — kernel squashfs (ro, always active)
-  pup_ro     — base Fatdog64 squashfs (ro, always active)
+  pup_ro     — base squashfs (ro, always active)
   pup_ro*    — extra SFS packages loaded at boot (ro)
   devbase    — sda2 ext4 base overlay (rw)
   devsave    — sda2 ext4 dev save (rw)
@@ -19,13 +27,16 @@ import re
 _LOCKED = frozenset({"pup_init", "kernel-modules", "pup_ro", "pup_save",
                      "devbase", "devsave", "pup_ro10"})
 
-_AUFS_ROOT = Path("/aufs")
 _BOOTSTATE = Path("/etc/BOOTSTATE")
-_SFS_DIR   = Path("/aufs")        # where branch points live
+
+# Known union-root prefixes across the Puppy/Fatdog64 family — checked in
+# order, first one with any matching /proc/mounts entry wins for this call.
+_UNION_ROOTS = ("aufs", "initrd")
 
 # /proc/mounts format: <dev> <mountpoint> <fstype> <opts> <dump> <pass>
 _BRANCH_RE = re.compile(
-    r"^(?P<dev>\S+)\s+(?P<mp>/aufs/\S+)\s+(?P<fs>\S+)\s+(?P<opts>\S+)"
+    r"^(?P<dev>\S+)\s+(?P<mp>/(?:" + "|".join(_UNION_ROOTS) + r")/\S+)\s+"
+    r"(?P<fs>\S+)\s+(?P<opts>\S+)"
 )
 
 
@@ -92,7 +103,8 @@ def _write_desired(sda2: Path, desired: set):
 
 
 def _live_branches() -> list[dict]:
-    """Parse /proc/mounts for AUFS branches."""
+    """Parse /proc/mounts for union-fs branches under whichever root this
+    distro actually uses (/aufs or /initrd — see _UNION_ROOTS)."""
     branches = []
     try:
         mounts = Path("/proc/mounts").read_text().splitlines()
@@ -103,10 +115,12 @@ def _live_branches() -> list[dict]:
         m = _BRANCH_RE.match(line)
         if not m:
             continue
-        mp   = m.group("mp")           # e.g. /aufs/pup_ro
+        mp   = m.group("mp")           # e.g. /aufs/pup_ro or /initrd/pup_ro
         fs   = m.group("fs")           # squashfs, ext4, tmpfs
         opts = m.group("opts")
-        name = mp.removeprefix("/aufs/")
+        # Strip whichever union root prefix actually matched — mp is always
+        # "/<root>/<name...>", so the name is everything after that root.
+        name = mp.split("/", 2)[2]
         mode = "ro" if "ro," in opts or opts.endswith(",ro") or opts == "ro" else "rw"
         branches.append({
             "name":        name,

@@ -110,9 +110,11 @@ class TrixieGateway:
         env = os.environ.get("SDA2")
         if env and Path(env).is_dir():
             return Path(env)
-        # fatdog64-style initrd distros stack under /aufs — /aufs/devbase is the
-        # cross-distro fallback when the raw /mnt/sda2 mount isn't present.
-        for candidate in ["/mnt/sda2", "/mnt/data", "/aufs/devbase"]:
+        # Fatdog64-derived distros (this box included) stack under /aufs;
+        # standard Puppy Linux stacks under /initrd instead — no /aufs
+        # directory exists there at all. Try both as cross-distro fallbacks
+        # when the raw /mnt/sda2 mount isn't present.
+        for candidate in ["/mnt/sda2", "/mnt/data", "/aufs/devbase", "/initrd/devbase"]:
             if Path(candidate).is_dir():
                 return Path(candidate)
         return Path("/mnt/sda2")
