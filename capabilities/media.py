@@ -531,17 +531,64 @@ async def browse(path: str | None = None) -> dict:
     }
 
 
+def _parent_pid(pid: int) -> int | None:
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+        return next((int(l.split()[1]) for l in lines if l.startswith("PPid:")), None)
+    except OSError:
+        return None
+
+
+async def close_app(pid: int) -> dict:
+    """Close the whole GUI app behind a media session, not just its mpv
+    process. For Chameleon-Media-Center / MPV-Media-Center, mpv is embedded
+    inside the app's own window — quitting mpv alone used to leave the app
+    running with a dead, unrespawned player and nothing further playable
+    from either the app or the gateway until it was restarted by hand.
+    Closing the parent app is the only control action that leaves things
+    in a working state, so this is what "kill"/"close" now does for those
+    sources; every other session type has no separate GUI shell to
+    preserve, so closing the player IS closing the app there."""
+    import signal as _signal
+    session = next((s for s in await _all_sessions() if s["pid"] == pid), None)
+    if session is None:
+        return {"ok": False, "error": f"no media session with pid {pid}"}
+
+    if session["backend"] != "mpv_ipc" or session["source"] not in (
+            "chameleon-media-center", "mpv-media-center"):
+        return await kill_session(pid)
+
+    ppid = _parent_pid(pid)
+    if ppid is None:
+        return {"ok": False, "error": "could not resolve parent app pid"}
+    try:
+        os.kill(ppid, _signal.SIGTERM)
+        return {"ok": True, "pid": ppid, "closed": "app"}
+    except ProcessLookupError:
+        return {"ok": True, "pid": ppid, "closed": "app"}
+    except PermissionError as e:
+        return {"ok": False, "error": str(e)}
+
+
 async def kill_session(pid: int) -> dict:
     import signal as _signal
     session = next((s for s in await _all_sessions() if s["pid"] == pid), None)
     if session is None:
         return {"ok": False, "error": f"no media session with pid {pid}"}
 
+    # CMC / MPV-Media-Center: mpv is embedded in the app's own window, so
+    # IPC-quitting it alone leaves the app half-broken (see close_app's
+    # docstring). Always close the whole app for these instead — the only
+    # two outcomes are "the UI closes" or "nothing happens", never a
+    # half-dead embedded player.
+    if session["backend"] == "mpv_ipc" and session["source"] in (
+            "chameleon-media-center", "mpv-media-center"):
+        return await close_app(pid)
+
     # mpv IPC has its own graceful "quit" command — prefer it over SIGTERM
     # so mpv can clean up (release the audio device, close cleanly) instead
-    # of just dying. Note: for a Chameleon-Media-Center session this kills
-    # mpv itself, not the CMC app — CMC's window keeps running with a now-
-    # empty video panel, same as if the user closed the file from within it.
+    # of just dying. This path is only reached for bare/manually-launched
+    # mpv now, where there's no separate app window to worry about.
     if session["backend"] == "mpv_ipc":
         socket_path = _mpv_ipc_socket_for_pid(pid)
         if socket_path and await mpv_ipc.run_command(socket_path, "quit"):
