@@ -152,6 +152,7 @@ class TrixieGateway:
         app.router.add_get( "/yay/network/status",          self._net_status)
         app.router.add_get( "/yay/network/interfaces",      self._net_interfaces)
         app.router.add_get( "/yay/network/tailscale_peers", self._net_tailscale_peers)
+        app.router.add_get( "/yay/network/gateway_qr",      self._qr_gateway_url)
         app.router.add_get( "/yay/network/wifi/scan",       self._wifi_scan)
         app.router.add_post("/yay/network/wifi/connect",    self._wifi_connect)
         app.router.add_post("/yay/network/wifi/disconnect", self._wifi_disconnect)
@@ -472,6 +473,40 @@ class TrixieGateway:
                 peers.append(entry)
         peers.sort(key=lambda p: (not p["self"], not p["online"], p["hostname"]))
         return web.json_response({"peers": peers})
+
+    async def _qr_gateway_url(self, req: web.Request) -> web.Response:
+        """QR code (PNG) encoding this gateway's own Tailscale URL, meant
+        to be viewed in a browser ON THIS PC (e.g. http://localhost:8772
+        /yay/network/gateway_qr) so a phone's camera can scan the screen
+        and fill in TrXi-Ctrl's Gateway URL field — solves the one gap
+        "Discover Peers" can't: that feature needs an *already-working*
+        gateway URL to call into, so it can't help with the very first
+        connection to any gateway."""
+        rc, out, _ = await _run_cmd(["tailscale", "status", "--json"])
+        ip = None
+        if rc == 0:
+            try:
+                self_node = json.loads(out).get("Self") or {}
+                ip = next((a for a in self_node.get("TailscaleIPs", []) if "." in a), None)
+            except json.JSONDecodeError:
+                pass
+        if not ip:
+            return web.json_response(
+                {"error": "tailscale IP not available — is tailscale up?"}, status=503)
+        url = f"http://{ip}:{self.port}"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "qrencode", "-o", "-", "-t", "PNG", "-s", "8", url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            png, err = await proc.communicate()
+        except FileNotFoundError:
+            return web.json_response(
+                {"error": "qrencode not installed (apt install qrencode)"}, status=500)
+        if proc.returncode != 0 or not png:
+            return web.json_response(
+                {"error": (err or b"qrencode failed").decode(errors="replace")}, status=500)
+        return web.Response(body=png, content_type="image/png",
+                            headers={"X-Gateway-URL": url})
 
     async def _wifi_scan(self, req: web.Request) -> web.Response:
         iface = req.rel_url.query.get("iface", self.wifi_iface)
@@ -913,6 +948,7 @@ class TrixieGateway:
     # ── Run ──────────────────────────────────────────────────────────────────
 
     async def run(self, socket_path: str, port: int):
+        self.port = port  # read by _qr_gateway_url to build the QR's URL
         runner = web.AppRunner(self.app)
         await runner.setup()
 
