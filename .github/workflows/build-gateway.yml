@@ -10,6 +10,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write         # softprops/action-gh-release needs this to create the release
+
 jobs:
   build:
     strategy:
@@ -113,3 +116,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: out/*
+          # tags like v0.2.0-test1 are pre-releases; only a plain vX.Y.Z is "latest"
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
