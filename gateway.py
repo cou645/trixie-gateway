@@ -1233,7 +1233,12 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, loop.stop)
+        try:
+            loop.add_signal_handler(sig, loop.stop)
+        except NotImplementedError:
+            # Windows' asyncio loop has no add_signal_handler; fall back to a
+            # plain signal handler that stops the loop from the main thread.
+            signal.signal(sig, lambda *_: loop.call_soon_threadsafe(loop.stop))
 
     try:
         loop.run_until_complete(gw.run(args.socket, args.port))
