@@ -1,0 +1,18 @@
+# Extra runtime deps for the Windows/macOS gateway, on top of requirements.txt.
+#   Windows:  py -m pip install -r requirements.txt -r requirements-crossplatform.txt
+#   macOS:    python3 -m pip install -r requirements.txt -r requirements-crossplatform.txt
+#
+# Linux needs none of these: it reads procfs/sysfs directly and drives
+# xdotool/wmctrl/amixer, which are system packages, not Python ones.
+
+psutil>=5.9                             ; sys_platform != "linux"
+
+# Windows: Core Audio volume/mute is COM, so it needs pycaw (+comtypes).
+# Input, window control and screen capture use ctypes/user32 and ffmpeg
+# gdigrab, which are already present.
+pycaw>=20240210                         ; sys_platform == "win32"
+comtypes>=1.2                           ; sys_platform == "win32"
+
+# macOS: Quartz supplies CGEvent (input) and the window list.
+pyobjc-framework-Quartz>=10.0           ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0            ; sys_platform == "darwin"

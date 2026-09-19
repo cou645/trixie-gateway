@@ -34,6 +34,7 @@ from pathlib import Path
 from aiohttp import web
 from aiohttp.web_middlewares import normalize_path_middleware
 
+import platforms
 from capability_broker import CapabilityBroker
 from semantic_journal import SemanticJournal
 from providers.router import ProviderRouter
@@ -69,6 +70,32 @@ def _detect_wifi_iface() -> str:
 
 
 WIFI_IFACE = _detect_wifi_iface()
+
+
+# Route prefix -> feature name in platforms.FEATURES. Anything not listed is
+# assumed portable (chat, journal, providers, capability tokens, health).
+_FEATURE_ROUTES = {
+    "/yay/layers":      "layers",
+    "/yay/firewall":    "firewall",
+    "/yay/bluetooth":   "bluetooth",
+    "/yay/brightness":  "brightness",
+    "/yay/network":     "network",
+    "/yay/media":       "media",
+}
+
+
+@web.middleware
+async def platform_guard_middleware(req: web.Request, handler):
+    """Answer Linux-only routes with a clear 501 on Windows/macOS.
+
+    Without this the handlers still run and fail deep inside a missing
+    iptables/nmcli/aufs, producing a 500 and a stack trace that says nothing
+    useful to whoever is holding the phone.
+    """
+    for prefix, feature in _FEATURE_ROUTES.items():
+        if req.path.startswith(prefix) and not platforms.supported(feature):
+            return web.json_response(platforms.unsupported_result(feature), status=501)
+    return await handler(req)
 
 
 @web.middleware
@@ -120,13 +147,15 @@ class TrixieGateway:
         return Path("/mnt/sda2")
 
     def _build_app(self) -> web.Application:
-        app = web.Application(middlewares=[cors_middleware, normalize_path_middleware()])
+        app = web.Application(middlewares=[cors_middleware, platform_guard_middleware,
+                                           normalize_path_middleware()])
         # OpenAI-compatible
         app.router.add_post("/v1/chat/completions", self._chat_completions)
         app.router.add_get( "/v1/models",           self._list_models)
         # YaYOS system
         app.router.add_get( "/yay/health",          self._health)
         app.router.add_get( "/yay/system",          self._system_info)
+        app.router.add_get( "/yay/capabilities",    self._capabilities)
         # Layers
         app.router.add_get( "/yay/layers",          self._get_layers)
         app.router.add_put( "/yay/layers/{name}",   self._set_layer)
@@ -361,8 +390,23 @@ class TrixieGateway:
             "providers":      self.router.status(),
             "journal_events": self.journal.count(),
             "sda2":           str(self.sda2),
+            # Kept for older app builds that read it; "os"/"features" below are
+            # what a cross-platform client should look at.
             "platform":       "debian-trixie",
+            "os":             platforms.HOST_OS,
+            "features":       platforms.features(),
         })
+
+    async def _capabilities(self, req: web.Request) -> web.Response:
+        """What this host supports, and whether the pieces are actually
+        working (missing packages, ungranted macOS permissions, which audio
+        control surface was detected)."""
+        info = await platforms.probe()
+        try:
+            info["audio"] = await audio.describe()
+        except Exception as e:
+            info["audio"] = {"error": str(e)}
+        return web.json_response(info)
 
     # ── Capability tokens ────────────────────────────────────────────────────
 

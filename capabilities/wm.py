@@ -1,8 +1,16 @@
-"""Window manager capability — EWMH control via wmctrl + xdotool (X11)."""
+"""Window manager capability.
+
+Linux/X11 uses wmctrl + xdotool (EWMH). Windows and macOS serve the subset
+their APIs expose -- list/active/get/focus/close/minimize/maximize -- through
+platforms.backend; the X11-specific rest (desktops, tiling, move/resize,
+fullscreen toggles) reports unsupported rather than pretending.
+"""
 
 import asyncio
 import os
 import re
+
+from platforms import backend as _backend, unsupported_result
 
 _DISPLAY = os.environ.get("DISPLAY", ":0")
 
@@ -26,6 +34,9 @@ async def _run(*args, timeout: int = 5) -> tuple[int, str, str]:
 # ── windows ───────────────────────────────────────────────────────────────────
 
 async def list_windows() -> list[dict]:
+    if _backend:
+        return await _backend.list_windows()
+
     rc, out, _ = await _run("wmctrl", "-l", "-G")
     if rc != 0:
         return []
@@ -50,6 +61,9 @@ async def list_windows() -> list[dict]:
 
 
 async def get_active_window() -> dict | None:
+    if _backend:
+        return await _backend.get_active_window()
+
     rc, out, _ = await _run("xdotool", "getactivewindow")
     if rc != 0 or not out.strip():
         return None
@@ -58,6 +72,9 @@ async def get_active_window() -> dict | None:
 
 
 async def get_window(wid: int) -> dict | None:
+    if _backend:
+        return await _backend.get_window(wid)
+
     wins = await list_windows()
     for w in wins:
         if w["id"] == wid:
@@ -66,6 +83,9 @@ async def get_window(wid: int) -> dict | None:
 
 
 async def find_windows(title: str = "", wm_class: str = "") -> list[dict]:
+    if _backend:
+        return []
+
     wins = await list_windows()
     results = []
     for w in wins:
@@ -80,17 +100,25 @@ async def find_windows(title: str = "", wm_class: str = "") -> list[dict]:
 # ── window actions ────────────────────────────────────────────────────────────
 
 async def focus_window(wid: int) -> dict:
+    if _backend:
+        return await _backend.activate_window(wid)
+
     rc, _, err = await _run("wmctrl", "-i", "-a", hex(wid))
     return {"ok": rc == 0, "error": err.strip() or None}
 
 
 async def close_window(wid: int) -> dict:
+    if _backend:
+        return await _backend.close_window(wid)
+
     rc, _, err = await _run("wmctrl", "-i", "-c", hex(wid))
     return {"ok": rc == 0, "error": err.strip() or None}
 
 
 async def move_resize_window(wid: int, x: int, y: int,
                              width: int, height: int) -> dict:
+    if _backend:
+        return unsupported_result("windows.move_resize")
     # wmctrl -i -r <id> -e <gravity,x,y,w,h>
     spec = f"0,{x},{y},{width},{height}"
     rc, _, err = await _run("wmctrl", "-i", "-r", hex(wid), "-e", spec)
@@ -98,6 +126,9 @@ async def move_resize_window(wid: int, x: int, y: int,
 
 
 async def maximize_window(wid: int) -> dict:
+    if _backend:
+        return await _backend.maximize_window(wid)
+
     rc, _, err = await _run(
         "wmctrl", "-i", "-r", hex(wid),
         "-b", "add,maximized_vert,maximized_horz",
@@ -106,6 +137,9 @@ async def maximize_window(wid: int) -> dict:
 
 
 async def restore_window(wid: int) -> dict:
+    if _backend:
+        return unsupported_result("windows.restore_window")
+
     rc, _, err = await _run(
         "wmctrl", "-i", "-r", hex(wid),
         "-b", "remove,maximized_vert,maximized_horz",
@@ -114,11 +148,17 @@ async def restore_window(wid: int) -> dict:
 
 
 async def minimize_window(wid: int) -> dict:
+    if _backend:
+        return await _backend.minimize_window(wid)
+
     rc, _, err = await _run("xdotool", "windowminimize", str(wid))
     return {"ok": rc == 0, "error": err.strip() or None}
 
 
 async def fullscreen_window(wid: int, enable: bool = True) -> dict:
+    if _backend:
+        return unsupported_result("windows.fullscreen_window")
+
     action = "add" if enable else "remove"
     rc, _, err = await _run(
         "wmctrl", "-i", "-r", hex(wid), "-b", f"{action},fullscreen",
@@ -129,6 +169,9 @@ async def fullscreen_window(wid: int, enable: bool = True) -> dict:
 # ── desktops ──────────────────────────────────────────────────────────────────
 
 async def list_desktops() -> list[dict]:
+    if _backend:
+        return []
+
     rc, out, _ = await _run("wmctrl", "-d")
     if rc != 0:
         return []
@@ -146,6 +189,9 @@ async def list_desktops() -> list[dict]:
 
 
 async def get_current_desktop() -> int:
+    if _backend:
+        return 0
+
     rc, out, _ = await _run("wmctrl", "-d")
     for line in out.splitlines():
         parts = line.split()
@@ -155,11 +201,17 @@ async def get_current_desktop() -> int:
 
 
 async def set_desktop(n: int) -> dict:
+    if _backend:
+        return unsupported_result("windows.set_desktop")
+
     rc, _, err = await _run("wmctrl", "-s", str(n))
     return {"ok": rc == 0, "error": err.strip() or None}
 
 
 async def move_window_to_desktop(wid: int, desktop: int) -> dict:
+    if _backend:
+        return unsupported_result("windows.move_window_to_desktop")
+
     rc, _, err = await _run("wmctrl", "-i", "-r", hex(wid), "-t", str(desktop))
     return {"ok": rc == 0, "error": err.strip() or None}
 
@@ -167,6 +219,9 @@ async def move_window_to_desktop(wid: int, desktop: int) -> dict:
 # ── tile ──────────────────────────────────────────────────────────────────────
 
 async def tile_windows(cols: int = 2) -> dict:
+    if _backend:
+        return unsupported_result("windows.tile_windows")
+
     """Simple tiling: arrange visible windows in a grid."""
     wins = [w for w in await list_windows() if w["desktop"] >= 0]
     if not wins:

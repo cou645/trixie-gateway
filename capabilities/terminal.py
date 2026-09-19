@@ -14,6 +14,8 @@ called bare with no prompt.
 import asyncio
 import os
 
+from platforms import backend as _backend
+
 _DISPLAY = os.environ.get("DISPLAY", ":0")
 _DEFAULT_CWD = os.path.expanduser("~")  # /root, not / -- see module docstring
 
@@ -39,13 +41,25 @@ async def exec_cmd(cmd: str, cwd: str | None = None, timeout: int = 30) -> dict:
 
     env = {**os.environ, "DISPLAY": _DISPLAY}
     try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd or _DEFAULT_CWD,
-            env=env,
-        )
+        if _backend:
+            # create_subprocess_shell would run cmd through /bin/sh, which does
+            # not exist on Windows; the backend picks PowerShell / the login
+            # shell instead.
+            proc = await asyncio.create_subprocess_exec(
+                *_backend.shell_command(cmd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd or _backend.default_cwd(),
+                env=env,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd or _DEFAULT_CWD,
+                env=env,
+            )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:

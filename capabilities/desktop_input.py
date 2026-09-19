@@ -1,7 +1,14 @@
-"""Desktop input capability — inject pointer/keyboard events into X11 via xdotool."""
+"""Desktop input capability — pointer/keyboard injection.
+
+Linux/X11 goes through xdotool (below). On Windows and macOS the same calls
+are served by platforms.backend (user32 SendInput / Quartz CGEvent), which is
+why every public function starts with the same delegation line.
+"""
 
 import asyncio
 import os
+
+from platforms import backend as _backend
 
 _DISPLAY = os.environ.get("DISPLAY", ":0")
 
@@ -50,11 +57,17 @@ async def _focus_at_pointer() -> None:
 
 
 async def mouse_move(x: int, y: int) -> dict:
+    if _backend:
+        return await _backend.mouse_move(x, y)
+
     ok = await _run(["xdotool", "mousemove", str(x), str(y)])
     return {"ok": ok, "x": x, "y": y}
 
 
 async def mouse_click(x: int, y: int, button: int = 1) -> dict:
+    if _backend:
+        return await _backend.mouse_click(x, y, button)
+
     await _run(["xdotool", "mousemove", str(x), str(y)])
     await _focus_at_pointer()
     ok = await _run(["xdotool", "click", "--clearmodifiers", str(button)])
@@ -62,6 +75,9 @@ async def mouse_click(x: int, y: int, button: int = 1) -> dict:
 
 
 async def mouse_down(x: int, y: int, button: int = 1) -> dict:
+    if _backend:
+        return await _backend.mouse_down(x, y, button)
+
     await _run(["xdotool", "mousemove", str(x), str(y)])
     await _focus_at_pointer()
     ok = await _run(["xdotool", "mousedown", str(button)])
@@ -69,12 +85,18 @@ async def mouse_down(x: int, y: int, button: int = 1) -> dict:
 
 
 async def mouse_up(x: int, y: int, button: int = 1) -> dict:
+    if _backend:
+        return await _backend.mouse_up(x, y, button)
+
     ok = await _run(["xdotool", "mousemove", str(x), str(y),
                      "mouseup", str(button)])
     return {"ok": ok}
 
 
 async def scroll(x: int, y: int, direction: str = "down", amount: int = 3) -> dict:
+    if _backend:
+        return await _backend.scroll(x, y, direction, amount)
+
     # xdotool button 4=scroll-up, 5=scroll-down
     btn = "4" if direction == "up" else "5"
     cmds = ["xdotool", "mousemove", str(x), str(y)]
@@ -85,17 +107,26 @@ async def scroll(x: int, y: int, direction: str = "down", amount: int = 3) -> di
 
 
 async def key_type(text: str) -> dict:
+    if _backend:
+        return await _backend.key_type(text)
+
     ok = await _run(["xdotool", "type", "--clearmodifiers", "--", text])
     return {"ok": ok}
 
 
 async def key_press(key: str) -> dict:
     """key: xdotool key name e.g. 'Return', 'ctrl+c', 'super', 'Escape'."""
+    if _backend:
+        return await _backend.key_press(key)
+
     ok = await _run(["xdotool", "key", "--clearmodifiers", key])
     return {"ok": ok}
 
 
 async def get_display_size() -> dict:
+    if _backend:
+        return await _backend.get_display_size()
+
     import re
     # Try xdpyinfo first
     try:

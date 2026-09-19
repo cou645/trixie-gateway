@@ -1,0 +1,106 @@
+name: Build gateway binaries
+
+# PyInstaller cannot cross-compile: each binary must be built on its own OS.
+# These runners are how the Windows .exe and macOS .app get built without
+# owning either machine. Artifacts are attached to the run, and to the release
+# when the workflow is triggered by a tag.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false        # a macOS failure shouldn't hide a good Windows build
+      matrix:
+        include:
+          - os: ubuntu-22.04     # older glibc => runs on newer distros too
+            name: linux-x86_64
+            artifact: dist/trixie-gateway
+          - os: windows-latest
+            name: windows-x86_64
+            artifact: dist/trixie-gateway.exe
+          - os: macos-15-intel    # Intel (macos-13 image is retired)
+            name: macos-x86_64
+            artifact: dist/TrixieGateway.app
+          - os: macos-14          # Apple silicon
+            name: macos-arm64
+            artifact: dist/TrixieGateway.app
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-crossplatform.txt pyinstaller
+
+      - name: Build
+        run: pyinstaller --clean --noconfirm trixie-gateway.spec
+
+      # Smoke test: the binary must start, serve /yay/health and report the
+      # right OS. Catches a missing bundled library, which is the usual
+      # PyInstaller failure and is invisible until first run.
+      - name: Smoke test (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          BIN=dist/trixie-gateway
+          [ -d dist/TrixieGateway.app ] && BIN=dist/TrixieGateway.app/Contents/MacOS/trixie-gateway
+          "$BIN" --port 8899 &
+          for i in $(seq 1 20); do
+            sleep 1
+            curl -sf http://127.0.0.1:8899/yay/health && break
+          done
+          curl -sf http://127.0.0.1:8899/yay/capabilities || exit 1
+          kill %1
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\trixie-gateway.exe -ArgumentList "--port","8899" -PassThru
+          $ok = $false
+          foreach ($i in 1..20) {
+            Start-Sleep -Seconds 1
+            try {
+              Invoke-RestMethod http://127.0.0.1:8899/yay/health | Out-Null
+              $caps = Invoke-RestMethod http://127.0.0.1:8899/yay/capabilities
+              $caps | ConvertTo-Json -Depth 4
+              if ($caps.os -ne "windows") { throw "reported os '$($caps.os)', expected windows" }
+              $ok = $true
+              break
+            } catch { }
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "gateway did not answer on /yay/health" }
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p out
+          if [ -d dist/TrixieGateway.app ]; then
+            # zip preserves the bundle's executable bits; a raw upload does not
+            ditto -c -k --keepParent dist/TrixieGateway.app out/trixie-gateway-${{ matrix.name }}.zip
+          elif [ -f dist/trixie-gateway.exe ]; then
+            cp dist/trixie-gateway.exe out/trixie-gateway-${{ matrix.name }}.exe
+          else
+            tar -czf out/trixie-gateway-${{ matrix.name }}.tar.gz -C dist trixie-gateway
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trixie-gateway-${{ matrix.name }}
+          path: out/*
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*

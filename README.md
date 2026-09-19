@@ -113,3 +113,105 @@ The current unit has **no `fuser`**, and is now `systemctl enable`d
 issue hit.
 
 Avoid `fuser` on this box generally while TOMOYO learning is saturated.
+
+## Windows / macOS (cross-platform gateway)
+
+The phone app talks to this gateway over plain HTTP + WebRTC, neither of which
+is Linux-specific — only the capabilities that touch the desktop are. Those now
+sit behind `platforms/`:
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| screen capture | ffmpeg `x11grab` | ffmpeg `gdigrab` | ffmpeg `avfoundation` |
+| mouse / keyboard | `xdotool` | `user32` SendInput (ctypes) | Quartz `CGEvent` (pyobjc) |
+| window list / focus / close | `wmctrl` + `xdotool` | `user32` EnumWindows | `CGWindowListCopyWindowInfo` |
+| volume / mute | `amixer` (ALSA) | Core Audio via `pycaw` | `osascript` |
+| system info | procfs / sysfs | `psutil` | `psutil` |
+| terminal | `/bin/sh` | PowerShell, else `cmd.exe` | `$SHELL -lc` |
+
+On Linux `platforms.backend` is `None` and every capability runs its original
+code path — the port adds no dependency and changes no behaviour there.
+
+**Porting status.** Supported everywhere: system, desktop (screen + input),
+windows, audio, terminal, chat, journal. Still Linux-only: layers (aufs has no
+Windows/macOS analogue), firewall (iptables), bluetooth (bluetoothctl),
+brightness (sysfs), network (nmcli), media (Chameleon Media Center). Those
+routes answer `501` with `{"unsupported": true}` off Linux rather than failing
+somewhere deep inside a missing tool.
+
+`GET /yay/capabilities` reports the OS, the feature matrix and a runtime probe
+(missing packages, ungranted macOS permissions). `GET /yay/health` now carries
+`os` and `features` too, so the app can hide what a given host can't do.
+
+### Run it
+
+```bash
+# both platforms, from the repo
+pip install -r requirements.txt -r requirements-crossplatform.txt
+python gateway.py --port 8772
+```
+
+ffmpeg's capture backends come with PyAV, so no separate ffmpeg install is
+needed for the screen stream.
+
+**macOS permissions.** macOS gates both things this gateway needs, and neither
+can be granted from code — grant them to whichever app runs the process
+(Terminal, iTerm, or a packaged build), in System Settings > Privacy & Security:
+
+* **Accessibility** — without it `CGEventPost` silently does nothing, so the
+  mouse and keyboard appear connected but dead.
+* **Screen Recording** — without it the video stream is black.
+
+`/yay/capabilities` reports both, so check it first when something looks broken.
+If the stream is black even with permission granted, the avfoundation screen
+index is wrong (it sits after the cameras, and varies per Mac): list them with
+`ffmpeg -f avfoundation -list_devices true -i ""` and set
+`TRIXIE_AVF_SCREEN_INDEX`.
+
+**Windows notes.** The process sets per-monitor DPI awareness at import,
+without which clicks land offset on a scaled display. `gdigrab` cannot capture
+some hardware-accelerated fullscreen apps (games, protected video); those
+appear black. Volume control needs `pycaw` — without it the audio routes report
+unsupported rather than silently doing nothing.
+
+**Untested on real hardware.** Written against the Win32/Quartz APIs but not
+yet run on a Windows or macOS machine; expect to shake out small issues on
+first run, starting with `/yay/capabilities`.
+
+## Building standalone binaries (PyInstaller)
+
+`trixie-gateway.spec` produces one self-contained executable per platform —
+no Python, no pip, no venv on the target machine:
+
+```bash
+pip install pyinstaller
+pyinstaller --clean --noconfirm trixie-gateway.spec
+# -> dist/trixie-gateway          (Linux)
+# -> dist/trixie-gateway.exe      (Windows)
+# -> dist/TrixieGateway.app       (macOS)
+```
+
+PyInstaller is **not** a cross-compiler: each binary must be built on its own
+OS. `.github/workflows/build-gateway.yml` builds all four targets (Linux,
+Windows, macOS Intel, macOS Apple silicon) on GitHub runners, smoke-tests each
+one by starting it and calling `/yay/health` + `/yay/capabilities`, and
+attaches them to the release when the workflow runs from a `v*` tag. That is
+the supported way to produce Windows/macOS builds without owning the hardware.
+
+The macOS target is a `.app` bundle on purpose: macOS attaches Screen Recording
+and Accessibility permissions to the bundle, so the grant sticks to the app
+instead of to whichever terminal launched it.
+
+**What bundling does and doesn't do.** It stops casual editing — there is no
+`.py` to open and change, and it removes the "install Python first" barrier.
+It is not encryption: the bundle still contains Python bytecode, which
+determined users can extract and decompile. If the goal is to protect
+commercial logic, the only real answer is to keep that logic server-side (or
+rewrite the sensitive parts in a compiled language); treat the binary as a
+distribution format, not as a licence enforcement mechanism.
+
+**UPX is deliberately off** in the spec: packed binaries trip antivirus
+heuristics, and an unsigned .exe already has enough of a SmartScreen problem.
+Signing (Authenticode on Windows, notarisation on macOS) needs paid
+certificates and is not wired up here; without it users see a warning they must
+click past on first run.

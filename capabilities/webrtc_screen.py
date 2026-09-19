@@ -29,6 +29,8 @@ import time
 import av
 from aiortc import RTCPeerConnection, RTCSessionDescription, AudioStreamTrack, VideoStreamTrack
 
+from platforms import backend as _backend
+
 LOG = logging.getLogger("trixie-gateway.webrtc")
 
 
@@ -93,17 +95,22 @@ class SharedX11Capture:
         return self._task is not None
 
     def _open(self):
-        opts = {
-            "framerate":   str(self._framerate),
-            "video_size":  f"{self._width}x{self._height}",
-            "draw_mouse":  "1",
-            "show_region": "0",
-        }
-        self._container = av.open(
-            f"{self._display}.0+0,0",
-            format="x11grab",
-            options=opts,
-        )
+        # x11grab on Linux; gdigrab (Windows) / avfoundation (macOS) via the
+        # platform backend. Same PyAV pipeline either way -- only the input
+        # url, format and options differ.
+        if _backend:
+            url, fmt, opts = _backend.capture_spec(
+                self._display, self._width, self._height, self._framerate)
+        else:
+            url = f"{self._display}.0+0,0"
+            fmt = "x11grab"
+            opts = {
+                "framerate":   str(self._framerate),
+                "video_size":  f"{self._width}x{self._height}",
+                "draw_mouse":  "1",
+                "show_region": "0",
+            }
+        self._container = av.open(url, format=fmt, options=opts)
         self._stream = next(
             s for s in self._container.streams if s.type == "video"
         )
