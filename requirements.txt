@@ -6,7 +6,7 @@ av>=13
 # cryptography 49+ ships no macOS Intel wheel, so pip builds it from source
 # against a dynamic OpenSSL that PyInstaller then can't bundle correctly
 # ("Symbol not found: _SSL_get0_group_name"). 48.x has a universal2 wheel.
-cryptography>=42 ; not (sys_platform == "darwin" and platform_machine == "x86_64")
+cryptography>=42 ; sys_platform != "darwin" or platform_machine != "x86_64"
 cryptography>=42,<49 ; sys_platform == "darwin" and platform_machine == "x86_64"
 pylibsrtp>=0.10
 aioice>=0.9
