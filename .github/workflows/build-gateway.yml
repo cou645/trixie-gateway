@@ -65,10 +65,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath dist\trixie-gateway.exe -ArgumentList "--port","8899" -PassThru
+          # stdout/stderr go to files so a crash on startup is diagnosable
+          # instead of just "did not answer".
+          $p = Start-Process -FilePath dist\trixie-gateway.exe -ArgumentList "--port","8899" -PassThru `
+                 -RedirectStandardOutput gw.out.log -RedirectStandardError gw.err.log
           $ok = $false
-          foreach ($i in 1..20) {
+          foreach ($i in 1..60) {
             Start-Sleep -Seconds 1
+            if ($p.HasExited) { break }
             try {
               Invoke-RestMethod http://127.0.0.1:8899/yay/health | Out-Null
               $caps = Invoke-RestMethod http://127.0.0.1:8899/yay/capabilities
@@ -78,8 +82,13 @@ jobs:
               break
             } catch { }
           }
-          Stop-Process -Id $p.Id -Force
-          if (-not $ok) { throw "gateway did not answer on /yay/health" }
+          if ($p.HasExited) { "gateway exited early, code $($p.ExitCode)" }
+          else { Stop-Process -Id $p.Id -Force }
+          if (-not $ok) {
+            "--- stdout ---"; Get-Content gw.out.log -ErrorAction SilentlyContinue
+            "--- stderr ---"; Get-Content gw.err.log -ErrorAction SilentlyContinue
+            throw "gateway did not answer on /yay/health"
+          }
 
       - name: Package
         shell: bash
