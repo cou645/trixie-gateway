@@ -31,6 +31,11 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, AudioStreamTrack, V
 
 from platforms import backend as _backend
 
+try:
+    from capabilities import vaapi_h264
+except ImportError:            # imported directly (tests put capabilities/ on sys.path)
+    import vaapi_h264
+
 LOG = logging.getLogger("trixie-gateway.webrtc")
 
 
@@ -353,7 +358,8 @@ async def create_offer(
     if video:
         await _shared_video.acquire(_DISPLAY, width, height, fps)
         track = X11ScreenTrack(framerate=fps)
-        pc.addTrack(track)
+        vaapi_h264.install()   # once, on first screen share: hardware H.264 when safe, else software
+        vaapi_h264.prefer_h264(pc, pc.addTrack(track))
 
     peer_has_audio = False
     if audio:
