@@ -25,6 +25,7 @@ KNOWN_TYPES = {
     "brightness_change", "volume_change", "mute_change",
     "media_open", "media_source", "media_kill",
     "app_launch", "app_kill",
+    "pm",
     "lock", "unlock",
     "firewall_rule_add", "firewall_rule_del", "firewall_policy",
     "firewall_flush", "firewall_preset",

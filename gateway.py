@@ -38,7 +38,7 @@ import platforms
 from capability_broker import CapabilityBroker
 from semantic_journal import SemanticJournal
 from providers.router import ProviderRouter
-from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, terminal, webrtc_screen, wm, apps
+from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps
 
 LOG = logging.getLogger("trixie-gateway")
 
@@ -199,6 +199,14 @@ class TrixieGateway:
         app.router.add_get(   "/yay/media/browse",         self._media_browse)
         app.router.add_post("/yay/media/source",         self._media_source)
         app.router.add_delete("/yay/media/session",      self._media_kill)
+        # PersonalManager (alarms, timetable, rsync, cron) — via pm_store
+        app.router.add_get(   "/yay/pm/items",                 self._pm_list)
+        app.router.add_post(  "/yay/pm/items/{collection}",    self._pm_add)
+        app.router.add_put(   "/yay/pm/items/{collection}/{id}", self._pm_update)
+        app.router.add_delete("/yay/pm/items/{collection}/{id}", self._pm_remove)
+        app.router.add_post(  "/yay/pm/apply",                 self._pm_apply)
+        app.router.add_post(  "/yay/pm/cron/enabled",          self._pm_cron_enabled)
+        app.router.add_get(   "/yay/pm/format",                self._pm_format)
         # Window manager
         app.router.add_get( "/yay/wm/windows",           self._wm_list)
         app.router.add_get( "/yay/wm/active",            self._wm_active)
@@ -636,6 +644,49 @@ class TrixieGateway:
     async def _media_browse(self, req: web.Request) -> web.Response:
         path = req.rel_url.query.get("path")
         return web.json_response(await media.browse(path))
+
+    # ── PersonalManager ──────────────────────────────────────────────────────
+    async def _pm_call(self, coro, journal: str = "") -> web.Response:
+        """Bad input (ValueError/KeyError/PermissionError) -> 400 with the
+        message, so the phone can show pm_store's validation errors."""
+        try:
+            result = await coro
+        except (ValueError, KeyError, PermissionError, FileNotFoundError) as e:
+            msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+            return web.json_response({"ok": False, "error": msg}, status=400)
+        if journal and result.get("ok"):
+            self.journal.append("pm", journal)
+        return web.json_response(result, dumps=lambda o: json.dumps(o, default=str))
+
+    async def _pm_list(self, req: web.Request) -> web.Response:
+        return await self._pm_call(personal_manager.list_items(
+            req.rel_url.query.get("collection", "")))
+
+    async def _pm_add(self, req: web.Request) -> web.Response:
+        c = req.match_info["collection"]
+        return await self._pm_call(personal_manager.add_item(c, await req.json()), f"add {c}")
+
+    async def _pm_update(self, req: web.Request) -> web.Response:
+        c, i = req.match_info["collection"], req.match_info["id"]
+        return await self._pm_call(personal_manager.update_item(c, i, await req.json()),
+                                   f"update {c} {i}")
+
+    async def _pm_remove(self, req: web.Request) -> web.Response:
+        c, i = req.match_info["collection"], req.match_info["id"]
+        return await self._pm_call(personal_manager.remove_item(c, i), f"remove {c} {i}")
+
+    async def _pm_apply(self, req: web.Request) -> web.Response:
+        lines = (await req.json()).get("lines", "")
+        return await self._pm_call(personal_manager.apply_lines(lines), "apply")
+
+    async def _pm_cron_enabled(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        return await self._pm_call(personal_manager.set_cron_enabled(
+            body.get("match", ""), bool(body.get("enabled", True))),
+            f"cron {'resume' if body.get('enabled', True) else 'pause'} {body.get('match', '')}")
+
+    async def _pm_format(self, req: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "format": personal_manager.format_help()})
 
     async def _media_kill(self, req: web.Request) -> web.Response:
         body   = await req.json()
