@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
+# Licensed under the PolyForm Strict License 1.0.0
+# (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
+# non-commercial use; no redistribution, modified versions or sale.
+# Commercial licences: cou645@gmail.com
+# Donations via PayPal: cou645@gmail.com
 """
 trixie-gateway — AI gateway daemon (Debian Trixie / X11 / systemd edition)
 
@@ -34,13 +40,30 @@ from pathlib import Path
 from aiohttp import web
 from aiohttp.web_middlewares import normalize_path_middleware
 
+import hmac
+import secrets
+import time
+
 import platforms
 from capability_broker import CapabilityBroker
 from semantic_journal import SemanticJournal
 from providers.router import ProviderRouter
-from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps
+from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules
 
 LOG = logging.getLogger("trixie-gateway")
+
+
+def _is_loopback(req: web.Request) -> bool:
+    peer = req.remote
+    return not peer or peer in ("127.0.0.1", "::1")
+
+# Routes reachable with no capability token. Keep this list short.
+_PUBLIC_ROUTES = {
+    ("GET",  "/yay/health"),
+    ("GET",  "/yay/network/gateway_qr"),
+    ("GET",  "/yay/pair/start"),
+    ("POST", "/yay/pair"),
+}
 
 DEFAULT_SOCKET = "/run/trixie-gateway.sock"
 DEFAULT_PORT   = 8772
@@ -85,6 +108,26 @@ _FEATURE_ROUTES = {
 
 
 @web.middleware
+async def tailscale_guard_middleware(req: web.Request, handler):
+    """Trust boundary is the tailnet, not per-route auth — every handler
+    here (terminal exec, desktop input, firewall control, ...) assumes
+    reaching this gateway at all already means you're a trusted tailnet
+    peer. But the TCP listener binds 0.0.0.0 (see start()), which is
+    reachable from any interface, not just tailscale0 — so that
+    assumption needs enforcing here. Same check already used correctly
+    in linux-system-tools/hashtext_server.py.
+    """
+    peer = req.remote
+    # The unix socket listener (local IPC, chmod 0660) has no peer IP at
+    # all — reaching it already implies local filesystem access, a
+    # stronger guarantee than any IP check, so it's trusted as-is.
+    if peer and not (peer.startswith("100.") or peer in ("127.0.0.1", "::1")):
+        return web.json_response(
+            {"error": "forbidden — tailscale only"}, status=403)
+    return await handler(req)
+
+
+@web.middleware
 async def platform_guard_middleware(req: web.Request, handler):
     """Answer Linux-only routes with a clear 501 on Windows/macOS.
 
@@ -117,6 +160,14 @@ class TrixieGateway:
         self.config_path = Path(config_path)
         self.config = self._load_config(self.config_path)
         self.broker  = CapabilityBroker(self.config.get("capabilities", {"allow_unauthenticated": True}))
+        self._pairing_code    = None
+        self._pairing_expires = 0.0
+        self._pairing_used    = True
+        # Shared clipboard history (capabilities/clipboard.History): every
+        # device's pushes and the PC's own copies, newest first
+        self._clip = clipboard.History()
+        self._rules = clip_rules.Rules()   # who receives whose shares
+        self._pc_seen = None          # last PC clipboard text looked at
         self.journal = SemanticJournal(self.config.get("journal", {}))
         self.router  = ProviderRouter(self.config.get("providers", {}))
         self.sda2    = self._resolve_sda2()
@@ -147,7 +198,24 @@ class TrixieGateway:
         return Path("/mnt/sda2")
 
     def _build_app(self) -> web.Application:
-        app = web.Application(middlewares=[cors_middleware, platform_guard_middleware,
+        @web.middleware
+        async def auth_middleware(req: web.Request, handler):
+            if req.path.startswith("/admin/"):      # settings pages: this PC only
+                if not clip_rules.is_local(req.remote):
+                    return web.json_response({"error": "admin pages are local only"}, status=403)
+                return await handler(req)
+            if (req.method, req.path) in _PUBLIC_ROUTES or not req.remote:
+                return await handler(req)
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self.broker.validate(token, scope="device"):
+                return web.json_response(
+                    {"error": "missing or invalid capability token — pair via /yay/pair"},
+                    status=401)
+            req["device"] = self.broker.subject(token)
+            return await handler(req)
+
+        app = web.Application(middlewares=[cors_middleware, auth_middleware,
+                                           platform_guard_middleware,
                                            normalize_path_middleware()])
         # OpenAI-compatible
         app.router.add_post("/v1/chat/completions", self._chat_completions)
@@ -168,6 +236,8 @@ class TrixieGateway:
         # Capability
         app.router.add_post("/yay/capability/issue", self._issue_capability)
         app.router.add_post("/yay/capability/check", self._check_capability)
+        app.router.add_get( "/yay/pair/start",       self._pair_start)
+        app.router.add_post("/yay/pair",             self._pair_device)
         # Brightness
         app.router.add_get( "/yay/brightness",              self._get_brightness)
         app.router.add_put( "/yay/brightness/screen",       self._set_brightness_screen)
@@ -224,6 +294,17 @@ class TrixieGateway:
         app.router.add_get( "/yay/lock/status",             self._lock_status)
         app.router.add_post("/yay/lock/lock",               self._lock_lock)
         app.router.add_post("/yay/lock/unlock",             self._lock_unlock)
+        # Clipboard
+        app.router.add_get( "/yay/clipboard",               self._clipboard_get)
+        app.router.add_put( "/yay/clipboard",               self._clipboard_set)
+        app.router.add_post("/yay/clipboard/mute",          self._clipboard_mute)
+        app.router.add_delete("/yay/clipboard/{id}",        self._clipboard_delete)
+        app.router.add_post("/yay/clipboard/{id}/lock",     self._clipboard_lock)
+        app.router.add_post("/yay/clipboard/{id}/pc",       self._clipboard_to_pc)
+        app.router.add_post("/yay/clipboard/{id}/save",     self._clipboard_save)
+        app.router.add_get( "/admin/clipboard",             self._clip_admin_page)
+        app.router.add_get( "/admin/config",                self._clip_admin_get)
+        app.router.add_post("/admin/config",                self._clip_admin_set)
         # Firewall
         app.router.add_get( "/yay/firewall/rules",          self._fw_rules)
         app.router.add_get( "/yay/firewall/presets",        self._fw_presets)
@@ -263,6 +344,8 @@ class TrixieGateway:
         # Desktop input (xdotool)
         app.router.add_post(  "/yay/desktop/input",         self._desktop_input)
         app.router.add_get(   "/yay/desktop/size",          self._desktop_size)
+        app.on_startup.append(self._clip_poll_start)
+        app.on_cleanup.append(self._clip_poll_stop)
         return app
 
     # ── OpenAI-compatible ────────────────────────────────────────────────────
@@ -463,6 +546,42 @@ class TrixieGateway:
         ok = self.broker.validate(body.get("token", ""), scope=body.get("scope", "chat"))
         return web.json_response({"valid": ok})
 
+    # ── Pairing (bootstraps a device's first token) ─────────────────────────
+    # /yay/pair/start must stay loopback-only: whoever can see the code it
+    # returns can pair any device, anywhere. /yay/pair (spend the code) is
+    # deliberately public — the code itself is the credential, one-shot,
+    # 10-minute TTL, 4 random bytes hex-encoded.
+
+    def _new_pairing_code(self) -> str:
+        self._pairing_code    = secrets.token_hex(4)
+        self._pairing_expires = time.time() + 600
+        self._pairing_used    = False
+        LOG.info("pairing code: %s (valid 10 min)", self._pairing_code)
+        return self._pairing_code
+
+    async def _pair_start(self, req: web.Request) -> web.Response:
+        if not _is_loopback(req):
+            return web.json_response({"error": "loopback only"}, status=403)
+        code = self._new_pairing_code()
+        return web.json_response({"pairing_code": code, "expires_in": 600})
+
+    async def _pair_device(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        code = str(body.get("pairing_code", ""))
+        valid = (not self._pairing_used and self._pairing_code is not None
+                 and time.time() < self._pairing_expires
+                 and hmac.compare_digest(code, self._pairing_code))
+        if not valid:
+            return web.json_response(
+                {"error": "invalid, expired, or already-used pairing code"}, status=403)
+        self._pairing_used = True
+        device_name = str(body.get("device_name", "unknown"))[:64]
+        token = self.broker.issue(scope="admin", ttl_seconds=10 * 365 * 24 * 3600,
+                                  subject=device_name)
+        self.journal.append("device_paired", device_name)
+        LOG.info("paired device %r", device_name)
+        return web.json_response({"token": token, "device_name": device_name})
+
     # ── Network management (ip / iwlist / wpa_cli — no nmcli) ────────────────
 
     async def _net_status(self, req: web.Request) -> web.Response:
@@ -527,13 +646,18 @@ class TrixieGateway:
         return web.json_response({"peers": peers})
 
     async def _qr_gateway_url(self, req: web.Request) -> web.Response:
-        """QR code (PNG) encoding this gateway's own Tailscale URL, meant
-        to be viewed in a browser ON THIS PC (e.g. http://localhost:8772
-        /yay/network/gateway_qr) so a phone's camera can scan the screen
-        and fill in TrXi-Ctrl's Gateway URL field — solves the one gap
-        "Discover Peers" can't: that feature needs an *already-working*
-        gateway URL to call into, so it can't help with the very first
-        connection to any gateway."""
+        """QR code (PNG) encoding this gateway's URL + a fresh pairing
+        code as JSON, meant to be viewed in a browser ON THIS PC (e.g.
+        http://localhost:8772/yay/network/gateway_qr) so a phone's
+        camera can scan the screen, fill in TrXi-Ctrl's Gateway URL
+        field, AND pair in one action — solves the one gap "Discover
+        Peers" can't: that feature needs an *already-working* gateway
+        URL to call into, so it can't help with the very first
+        connection to any gateway. Loopback-only, same reasoning as
+        /yay/pair/start: this now hands out a pairing secret, not just
+        an address."""
+        if not _is_loopback(req):
+            return web.json_response({"error": "loopback only"}, status=403)
         rc, out, _ = await _run_cmd(["tailscale", "status", "--json"])
         ip = None
         if rc == 0:
@@ -546,9 +670,10 @@ class TrixieGateway:
             return web.json_response(
                 {"error": "tailscale IP not available — is tailscale up?"}, status=503)
         url = f"http://{ip}:{self.port}"
+        payload = json.dumps({"url": url, "pair": self._new_pairing_code()})
         try:
             proc = await asyncio.create_subprocess_exec(
-                "qrencode", "-o", "-", "-t", "PNG", "-s", "8", url,
+                "qrencode", "-o", "-", "-t", "PNG", "-s", "8", payload,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             png, err = await proc.communicate()
         except FileNotFoundError:
@@ -783,6 +908,136 @@ class TrixieGateway:
             self.journal.append("unlock", "screen_unlocked", {"source": "remote"})
         return web.json_response(result)
 
+    # ── Clipboard ─────────────────────────────────────────────────────────────
+    # PC as the hub: a shared history (capabilities/clipboard.History) of
+    # every device's pushes and the PC's own copies, newest first, kept
+    # across restarts. Pushing also sets the PC's OS clipboard so it can be
+    # pasted into a PC document. Locked items are never trimmed or deleted.
+
+    def _clip_device(self, req: web.Request) -> str:
+        """The device label (clip_rules: Tailscale node / MAC / paired name,
+        named on /admin/clipboard); "PC" for this machine."""
+        return self._clip_ident(req)[0]
+
+    def _clip_ident(self, req: web.Request):
+        token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        return self._rules.ident(req.remote, self.broker.subject(token) or "unknown")
+
+    def _clip_item(self, req: web.Request):
+        """The item named in the URL, if this device may see it."""
+        item = self._clip.get(req.match_info["id"])
+        if item and self._rules.can_see(self._clip_device(req),
+                                        self._rules.shown([item])[0]["device"]):
+            return item
+        return None
+
+    async def _clip_admin_page(self, req: web.Request) -> web.Response:
+        return web.Response(text=clip_rules.ADMIN_HTML, content_type="text/html")
+
+    async def _clip_admin_get(self, req: web.Request) -> web.Response:
+        return web.json_response(self._rules.data())
+
+    async def _clip_admin_set(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        self._rules.update(body.get("devices"), body.get("groups"), body.get("receive"))
+        return web.json_response({"ok": True})
+
+    async def _clip_poll_start(self, app):
+        self._clip_task = asyncio.create_task(self._clip_poll())
+
+    async def _clip_poll_stop(self, app):
+        self._clip_task.cancel()
+
+    async def _clip_poll(self):
+        """The PC's own copies join the history (every 2 s)."""
+        while True:
+            try:
+                pc = await clipboard.get()
+                text = pc.get("text") if pc.get("ok") else None
+                if text and text.strip() and text != self._pc_seen:
+                    first, self._pc_seen = self._pc_seen is None, text
+                    # after a (re)start, a text already in the history was
+                    # copied before: only note it
+                    known = first and any(i["text"] == text
+                                          for i in self._clip.items)
+                    if not known and text != self._clip.latest_text():
+                        self._clip.add(text, "This PC (%s)" % platform.node(),
+                                       clip_rules.PC)
+            except Exception as e:                     # keep polling
+                LOG.debug("clipboard poll: %s", e)
+            await asyncio.sleep(2)
+
+    async def _clipboard_get(self, req: web.Request) -> web.Response:
+        me = self._clip_device(req)
+        return web.json_response({"ok": True, "me": me,
+                                  "entries": self._rules.visible(
+                                      me, self._rules.shown(self._clip.items)),
+                                  "max": self._clip.max_items,
+                                  "targets": self._rules.targets(me),
+                                  "muted": self._rules.mute.get(me, [])})
+
+    async def _clipboard_mute(self, req: web.Request) -> web.Response:
+        """This device hides (or shows again) one sender's shares."""
+        body = await req.json()
+        sender = str(body.get("sender", "")).strip()
+        if not sender:
+            return web.json_response({"ok": False, "error": "no sender"}, status=400)
+        if sender.startswith("This PC"):
+            sender = clip_rules.PC
+        muted = self._rules.set_mute(self._clip_device(req), sender,
+                                     bool(body.get("muted", True)))
+        return web.json_response({"ok": True, "muted": muted})
+
+    async def _clipboard_set(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        text = str(body.get("text", ""))
+        if not text:
+            return web.json_response({"ok": False, "error": "empty"}, status=400)
+        device, key = self._clip_ident(req)
+        to = [str(x) for x in body.get("to") or [] if str(x).strip()]
+        item = self._clip.add(text, device, key, to)
+        self._pc_seen = text                  # the poll must not re-add it
+        result = await clipboard.set_text(text)
+        self.journal.append("clipboard_set", device)
+        return web.json_response({"ok": True, "device": device, "id": item["id"],
+                                  "pc": result.get("ok", False),
+                                  **({"error": result["error"]} if "error" in result else {})})
+
+    async def _clipboard_delete(self, req: web.Request) -> web.Response:
+        if self._clip_item(req) is None:
+            return web.json_response({"ok": False, "error": "missing"}, status=404)
+        r = self._clip.delete(req.match_info["id"])
+        if r == "ok":
+            self.journal.append("clipboard_delete", self._clip_device(req))
+        return web.json_response({"ok": r == "ok", **({"error": r} if r != "ok" else {})},
+                                 status={"ok": 200, "locked": 409}.get(r, 404))
+
+    async def _clipboard_lock(self, req: web.Request) -> web.Response:
+        body = await req.json() if req.can_read_body else {}
+        if self._clip_item(req) is None:
+            return web.json_response({"ok": False, "error": "missing"}, status=404)
+        item = self._clip.lock(req.match_info["id"], body.get("locked", True))
+        return web.json_response({"ok": item is not None, "item": item},
+                                 status=200 if item else 404)
+
+    async def _clipboard_to_pc(self, req: web.Request) -> web.Response:
+        item = self._clip_item(req)
+        if item is None:
+            return web.json_response({"ok": False, "error": "missing"}, status=404)
+        self._pc_seen = item["text"]
+        result = await clipboard.set_text(item["text"])
+        return web.json_response({"ok": result.get("ok", False),
+                                  **({"error": result["error"]} if "error" in result else {})})
+
+    async def _clipboard_save(self, req: web.Request) -> web.Response:
+        if self._clip_item(req) is None:
+            return web.json_response({"ok": False, "error": "missing"}, status=404)
+        path = self._clip.save_file(req.match_info["id"])
+        if path:
+            self.journal.append("clipboard_save", path)
+        return web.json_response({"ok": bool(path), "path": path},
+                                 status=200 if path else 404)
+
     # ── Firewall ──────────────────────────────────────────────────────────────
 
     async def _fw_rules(self, req: web.Request) -> web.Response:
@@ -1004,14 +1259,15 @@ class TrixieGateway:
         action = body.get("action", "")
         x      = int(body.get("x", 0))
         y      = int(body.get("y", 0))
+        device = req.get("device")
         if action == "move":
-            return web.json_response(await desktop_input.mouse_move(x, y))
+            return web.json_response(await desktop_input.mouse_move(x, y, device=device))
         if action == "click":
             return web.json_response(await desktop_input.mouse_click(
-                x, y, int(body.get("button", 1))))
+                x, y, int(body.get("button", 1)), device=device))
         if action == "down":
             return web.json_response(await desktop_input.mouse_down(
-                x, y, int(body.get("button", 1))))
+                x, y, int(body.get("button", 1)), device=device))
         if action == "up":
             return web.json_response(await desktop_input.mouse_up(
                 x, y, int(body.get("button", 1))))

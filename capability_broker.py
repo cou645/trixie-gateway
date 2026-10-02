@@ -1,3 +1,9 @@
+# Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
+# Licensed under the PolyForm Strict License 1.0.0
+# (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
+# non-commercial use; no redistribution, modified versions or sale.
+# Commercial licences: cou645@gmail.com
+# Donations via PayPal: cou645@gmail.com
 """
 Capability token broker — scoped, time-limited, HMAC-signed tokens.
 
@@ -62,6 +68,15 @@ class CapabilityBroker:
             "iat": int(time.time()),
         }
         return self._sign(payload)
+
+    def subject(self, token: str) -> str | None:
+        """The device_name a token was issued to (the "sub" claim from
+        issue()), or None if the token doesn't verify. Server-derived, so
+        a caller can't claim to be a different device than it paired as."""
+        payload = self._verify(token)
+        if not payload or payload.get("exp", 0) < time.time():
+            return None
+        return payload.get("sub")
 
     def validate(self, token: str, scope: str) -> bool:
         if not token:

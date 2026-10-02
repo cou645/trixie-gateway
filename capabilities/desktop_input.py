@@ -1,3 +1,9 @@
+# Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
+# Licensed under the PolyForm Strict License 1.0.0
+# (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
+# non-commercial use; no redistribution, modified versions or sale.
+# Commercial licences: cou645@gmail.com
+# Donations via PayPal: cou645@gmail.com
 """Desktop input capability — pointer/keyboard injection.
 
 Linux/X11 goes through xdotool (below). On Windows and macOS the same calls
@@ -11,6 +17,21 @@ import os
 from platforms import backend as _backend
 
 _DISPLAY = os.environ.get("DISPLAY", ":0")
+
+# Last known pointer position per paired device (the token's "sub" claim --
+# see gateway.py's auth_middleware). Purely a UX aid for multi-phone
+# sessions: webrtc_screen.py draws these as labeled markers on the shared
+# video feed so each connected phone can see where every phone's pointer
+# last was. The real OS-level cursor stays one shared resource either way
+# (whichever device last moved it wins) -- true independent per-device
+# control would need compositor-level multi-seat support this box's
+# compositor doesn't have.
+peer_cursors: dict[str, tuple[int, int]] = {}
+
+
+def _note_cursor(device: str | None, x: int, y: int) -> None:
+    if device:
+        peer_cursors[device] = (x, y)
 
 
 async def _run(cmd: list[str]) -> bool:
@@ -56,7 +77,8 @@ async def _focus_at_pointer() -> None:
         pass
 
 
-async def mouse_move(x: int, y: int) -> dict:
+async def mouse_move(x: int, y: int, device: str | None = None) -> dict:
+    _note_cursor(device, x, y)
     if _backend:
         return await _backend.mouse_move(x, y)
 
@@ -64,7 +86,8 @@ async def mouse_move(x: int, y: int) -> dict:
     return {"ok": ok, "x": x, "y": y}
 
 
-async def mouse_click(x: int, y: int, button: int = 1) -> dict:
+async def mouse_click(x: int, y: int, button: int = 1, device: str | None = None) -> dict:
+    _note_cursor(device, x, y)
     if _backend:
         return await _backend.mouse_click(x, y, button)
 
@@ -74,7 +97,8 @@ async def mouse_click(x: int, y: int, button: int = 1) -> dict:
     return {"ok": ok, "x": x, "y": y, "button": button}
 
 
-async def mouse_down(x: int, y: int, button: int = 1) -> dict:
+async def mouse_down(x: int, y: int, button: int = 1, device: str | None = None) -> dict:
+    _note_cursor(device, x, y)
     if _backend:
         return await _backend.mouse_down(x, y, button)
 
