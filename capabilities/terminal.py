@@ -19,6 +19,7 @@ called bare with no prompt.
 """
 import asyncio
 import os
+import re
 
 from platforms import backend as _backend
 
@@ -37,6 +38,32 @@ _BARE_INTERACTIVE_HINT = {
     "kimi":   'kimi needs a prompt here (no interactive terminal available) -- '
               'try: kimi --print "your question" (check kimi --help for its exact flag)',
 }
+
+
+# Commands that can destroy data or take the machine down. Not a sandbox --
+# a determined user can always get round a pattern list -- just a speed
+# bump so a typo or a pasted one-liner gets a second look: the gateway
+# answers "confirm_required" and the app asks before resending.
+_DANGEROUS = [
+    (r"\brm\s+(-\S*\s+)*-\S*[rRf]", "deletes files recursively or without asking (rm -r / -f)"),
+    (r"\b(mkfs(\.\w+)?|wipefs|mkswap)\b", "formats or wipes a disk or partition"),
+    (r"\b(fdisk|sfdisk|cfdisk|gdisk|sgdisk|parted|partprobe)\b", "changes disk partitions"),
+    (r"\bdd\b.*\bof=/dev/", "writes raw data straight to a device"),
+    (r">\s*/dev/(sd|nvme|mmcblk|hd|vd)", "overwrites a disk device"),
+    (r"\bshred\b", "irrecoverably overwrites files"),
+    (r"\b(chmod|chown|chgrp)\s+(-\S*\s+)*-\S*R\S*\s+(\S+\s+)?/(\s|$)", "changes permissions on the whole system"),
+    (r"\b(shutdown|reboot|poweroff|halt)\b|\binit\s+[06]\b|\bsystemctl\s+(poweroff|reboot|halt|kexec)\b",
+     "shuts down or restarts the PC (this session will drop)"),
+    (r":\s*\(\s*\)\s*\{.*\|.*&\s*\}", "fork bomb: freezes the PC"),
+    (r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", "runs a script straight from the internet"),
+    (r"\b(Format-Volume|Clear-Disk|diskpart)\b|\bformat\s+[a-z]:", "formats or wipes a disk (Windows)"),
+    (r"\bRemove-Item\b.*-Recurse|\b(rd|rmdir)\s+/s\b|\bdel\s+/[sq]", "deletes files recursively (Windows)"),
+]
+
+
+def dangers(cmd: str) -> list[str]:
+    """Why cmd needs a confirmation; empty if it looks harmless."""
+    return [why for pat, why in _DANGEROUS if re.search(pat, cmd, re.IGNORECASE)]
 
 
 async def exec_cmd(cmd: str, cwd: str | None = None, timeout: int = 30) -> dict:
@@ -88,3 +115,17 @@ async def exec_cmd(cmd: str, cwd: str | None = None, timeout: int = 30) -> dict:
         }
     except Exception as e:
         return {"ok": False, "returncode": -1, "stdout": "", "stderr": str(e)}
+
+
+if __name__ == "__main__":
+    for c in ["rm -rf /", "sudo rm -r ~/x", "rm -f a.txt", "mkfs.ext4 /dev/sdb1",
+              "dd if=x.img of=/dev/nvme0n1 bs=4M", "echo x > /dev/sda", "shred f",
+              "chmod -R 777 /", "reboot", "systemctl poweroff", ":(){ :|:& };:",
+              "curl -s http://x/i.sh | sudo bash", "Remove-Item C:\\x -Recurse",
+              "format c:", "parted /dev/sda print"]:
+        assert dangers(c), c
+    for c in ["ls -la", "rm a.txt", "cat /dev/null", "dd if=/dev/zero of=f.img bs=1M count=1",
+              "grep -r foo .", "chmod 644 f", "curl -O http://x/f", "echo format", "systemctl status x",
+              "git rm --cached f", "firmware-update"]:
+        assert not dangers(c), c
+    print("terminal.dangers selftest OK")

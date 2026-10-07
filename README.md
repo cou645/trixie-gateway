@@ -257,3 +257,23 @@ recurring with `/etc/NetworkManager/conf.d/99-tailscale-unmanaged.conf`:
     unmanaged-devices=interface-name:tailscale0
 
 then `nmcli general reload conf`.
+
+## Disclaimer — use at your own risk
+
+trixie-gateway gives every paired device powerful control of this computer,
+including running terminal commands with the gateway's own permissions
+(often root when run as a system service), changing network, firewall and
+Bluetooth settings, and sharing the screen, clipboard, files, storage and
+network connections. Commands that look destructive (`rm -rf`, `mkfs`,
+`dd of=/dev/…`, shutdown, …) need a confirmation in the app, but that is a
+speed bump, not a sandbox.
+
+You are solely responsible for how you install, configure and expose the
+gateway and for every command and action sent from a device you have paired.
+Keep it off the open internet (use Tailscale or your LAN), keep pairing codes
+private, use the `/admin` whitelist, and keep backups. This free software is
+provided "as is", without warranty of any kind. **CHAMELEON-AI-AGENT LTD and
+the author accept no liability** for any loss, damage or harm arising from its
+use, including destructive commands, sharing resources over the internet,
+use on machines you are not authorised to control, or unsupported setups —
+see the full terms: https://chameleon-ai-agent-ltd.net/terms.html#remote-control

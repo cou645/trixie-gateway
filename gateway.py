@@ -1476,8 +1476,16 @@ class TrixieGateway:
         timeout = int(body.get("timeout", 30))
         if not cmd:
             return web.json_response({"ok": False, "error": "cmd required"}, status=400)
+        why = terminal.dangers(cmd)
+        if why and not body.get("confirm"):
+            # 200 so older app builds show the stderr text instead of failing
+            return web.json_response({
+                "ok": False, "confirm_required": True, "reasons": why, "returncode": -1,
+                "stdout": "", "stderr": "Not run: this command " + "; ".join(why) +
+                ". Confirm it in an up-to-date TrXi-Ctrl to run it anyway."})
         result = await terminal.exec_cmd(cmd, cwd=cwd, timeout=timeout)
-        self.journal.append("terminal_exec", cmd[:80])
+        self.journal.append("terminal_exec", cmd[:80],
+                            {"confirmed_dangerous": why} if why else None)
         return web.json_response(result)
 
     # ── Run ──────────────────────────────────────────────────────────────────
