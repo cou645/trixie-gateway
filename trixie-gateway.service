@@ -11,6 +11,15 @@ Type=simple
 # (av.error.OSError: Input/output error) on every /yay/webrtc/offer call.
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/root/.Xauthority
+# Same problem for a Wayland session -- systemd doesn't inherit these either,
+# and platforms/__init__.py's LINUX_SESSION detection reads them from the
+# environment to decide whether to load platforms/linux_wayland.py. Safe to
+# set unconditionally: under an X11 session WAYLAND_DISPLAY's socket simply
+# won't exist and the X11 code path above is used instead (this box boots
+# into a session picker that chooses one or the other, never both -- see
+# CLAUDE.md's "Display server: chosen at boot" note).
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/0
 # systemd's default PATH is a stripped /usr/local/sbin:/usr/local/bin:
 # /usr/sbin:/usr/bin:/sbin:/bin -- doesn't include claude/kimi/cargo, so
 # /yay/terminal/exec (used by the phone app's Terminal screen) couldn't
@@ -18,11 +27,11 @@ Environment=XAUTHORITY=/root/.Xauthority
 Environment=PATH=/root/.cargo/bin:/root/.kimi-code/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # snd-aloop is only needed for audio streaming to the phone; ignore if absent
 ExecStartPre=-/sbin/modprobe snd-aloop
-ExecStart=/root/pyqt6-venv/bin/python /aufs/devbase/trixie-gateway/gateway.py --port 8772
+ExecStart=/root/pyside6-venv/bin/python /aufs/devbase/trixie-gateway/gateway.py --port 8772
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=10
-RuntimeDirectory=trixie-gateway
+RuntimeDirectory=/aufs/devbase/trixie-gateway
 KillMode=mixed
 # Enable audio tee to phone ONLY after installing porting/99-yayos-fdtee.conf
 # and changing its hw:Audio,0 to this box's card name (aplay -l):

@@ -24,7 +24,12 @@ own shares.
      "groups":  {"family": ["Pixel", "Doogee"]},
      "receive": {"Pixel": ["Doogee"]},
      "seen":    {"ts:pixel-8": {"ip": "100.98.53.60", "name": "TrXi-Ctrl",
-                                "last": 1790971153.0}}}
+                                "last": 1790971153.0}},
+     "whitelist": true, "allow": ["ts:pixel-8", "mac:6e:6c:..."]}
+
+Whitelist (/admin): when on, only connections whose key is in "allow" get
+in at all (pairing included); everyone else is refused and shows up as
+blocked in "seen" so the admin can tick it. This PC is always let in.
 """
 import ipaddress
 import json
@@ -57,7 +62,16 @@ def _tailscale_names(cache={"at": 0.0, "map": {}}):
     return cache["map"]
 
 
-def _mac(ip):
+def _mac(ip, cache={}):
+    """ip -> LAN MAC from the neighbour table, cached a minute."""
+    hit = cache.get(ip)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    cache[ip] = (time.time(), _neigh(ip))
+    return cache[ip][1]
+
+
+def _neigh(ip):
     try:
         out = subprocess.run(["ip", "neigh", "show", ip], capture_output=True,
                              text=True, timeout=3).stdout.split()
@@ -97,11 +111,14 @@ class Rules:
         self.receive = d.get("receive", {})
         self.seen = d.get("seen", {})
         self.mute = d.get("mute", {})        # receiver -> muted senders
+        self.whitelist = bool(d.get("whitelist", False))
+        self.allow = d.get("allow", [])      # connection keys let in
         self._dirty_at = 0.0
 
     def data(self):
         return {"devices": self.devices, "groups": self.groups,
-                "receive": self.receive, "seen": self.seen, "mute": self.mute}
+                "receive": self.receive, "seen": self.seen, "mute": self.mute,
+                "whitelist": self.whitelist, "allow": self.allow}
 
     def save(self):
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
@@ -141,18 +158,35 @@ class Rules:
         return [dict(i, device=self.label_of_key(i["key"]))
                 if i.get("key") not in (None, PC) else i for i in items]
 
+    def set_whitelist(self, on, allow):
+        self.whitelist = bool(on)
+        self.allow = sorted({str(k).strip() for k in allow if str(k).strip()})
+        self.save()
+
+    def admit(self, ip, name):
+        """Remember the connection; False if the whitelist shuts it out."""
+        if is_local(ip):
+            return True
+        keys = keys_for(ip, name)
+        ok = not self.whitelist or any(k in self.allow for k in keys)
+        self._note(keys, ip, name, blocked=not ok)
+        return ok
+
+    def _note(self, keys, ip, name, **extra):
+        now = time.time()
+        for k in keys[:1]:                 # the strongest key is the client
+            entry = self.seen.setdefault(k, {})
+            entry.update(ip=ip, name=name, last=now, **extra)
+        if now - self._dirty_at > 30:      # don't write the file every poll
+            self._dirty_at = now
+            self.save()
+
     def ident(self, ip, name):
         """(device label, connection key) for a request; remembers it."""
         if is_local(ip):
             return PC, PC
         keys = keys_for(ip, name)
-        now = time.time()
-        for k in keys[:1]:                 # the strongest key is the client
-            entry = self.seen.setdefault(k, {})
-            entry.update(ip=ip, name=name, last=now)
-        if now - self._dirty_at > 30:      # don't write the file every poll
-            self._dirty_at = now
-            self.save()
+        self._note(keys, ip, name)
         for k in keys:
             for lab, ks in self.devices.items():
                 if k in ks:
@@ -249,6 +283,13 @@ def _selftest():
     assert keys_for("10.0.0.9", "TrXi-Ctrl")[-1] == "name:TrXi-Ctrl"
     assert Rules(r.path).receive["Pixel"] == ["Doogee"]   # saved
     assert oct(os.stat(r.path).st_mode)[-3:] == "600"
+    # whitelist: off lets anyone in; on, only listed keys (PC always)
+    assert r.admit("10.0.0.9", "x")
+    r.set_whitelist(True, ["name:Good", " "])
+    assert r.admit("10.0.0.9", "Good") and not r.admit("10.0.0.9", "Bad")
+    assert r.admit("127.0.0.1", "Bad")
+    assert r.seen[keys_for("10.0.0.9", "Bad")[0]]["blocked"]
+    assert Rules(r.path).allow == ["name:Good"] and Rules(r.path).whitelist
     print("clip_rules selftest OK")
 
 

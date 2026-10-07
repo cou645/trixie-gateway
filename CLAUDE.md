@@ -27,3 +27,7 @@ that pattern matches the shell's own command line and kills it.
 
 MCP servers here (`media_mcp_server.py`) are thin JSON-RPC wrappers over the
 same `capabilities/` module the REST routes use — follow that pattern.
+
+Desktop control panel: `gateway_manager.py` (PySide6, launcher
+`~/.local/share/applications/custom-gateway-manager.desktop`), which does
+start/stop/restart of the free or Pro unit, shows the pairing QR, and tails the journal.

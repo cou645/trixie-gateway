@@ -1,3 +1,9 @@
+# Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
+# Licensed under the PolyForm Strict License 1.0.0
+# (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
+# non-commercial use; no redistribution, modified versions or sale.
+# Commercial licences: cou645@gmail.com
+# Donations via PayPal: cou645@gmail.com
 """Layer control capability — list AUFS/union branches (Fatdog64 / Puppy family).
 
 Fatdog64 (this box) and vanilla Puppy Linux both build their root with the

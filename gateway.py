@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/root/pyside6-venv/bin/python3
 # Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
 # Licensed under the PolyForm Strict License 1.0.0
 # (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
@@ -12,7 +12,7 @@ The PC-side counterpart to the yayos-apk phone app. Ported from fd64-gateway
 (the Fatdog64 fork — kept alongside as the frozen reference for the
 YaYOS-gateway-v2.sfs bundle):
   - Init    : systemd unit (trixie-gateway.service), not SysV rc.d
-  - Python  : /root/pyqt6-venv (system python3 3.13 has no aiohttp)
+  - Python  : /root/pysdide6-venv (system python3 3.13 has no aiohttp)
   - Wi-Fi   : interface auto-detected (was hard-coded wlan2)
   - Paths   : ~/.config/trixie-gateway/config.json (legacy ~/.yayos/* still read);
               data root resolves /mnt/sda2 -> /aufs/devbase
@@ -48,7 +48,7 @@ import platforms
 from capability_broker import CapabilityBroker
 from semantic_journal import SemanticJournal
 from providers.router import ProviderRouter
-from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules
+from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules, app_updates
 
 LOG = logging.getLogger("trixie-gateway")
 
@@ -64,6 +64,92 @@ _PUBLIC_ROUTES = {
     ("GET",  "/yay/pair/start"),
     ("POST", "/yay/pair"),
 }
+
+ADMIN_HOME = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gateway — %(host)s</title>
+<style>
+ body{font:15px/1.45 system-ui,sans-serif;margin:0 auto;max-width:900px;padding:16px;background:#111;color:#eee}
+ h1{font-size:1.3em} h2{font-size:1.1em;margin-top:1.4em}
+ .row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+ .qr{background:#fff;padding:12px;border-radius:8px} .qr img{display:block;width:260px;height:260px}
+ table{border-collapse:collapse;width:100%%} th,td{border:1px solid #444;padding:5px 8px;text-align:left} th{background:#222}
+ a{color:#7dd3fc} button{background:#2563eb;color:#fff;border:0;padding:7px 14px;border-radius:4px;font-size:1em;cursor:pointer}
+ :focus-visible{outline:3px solid #facc15;outline-offset:2px} .muted{color:#aaa} code{background:#222;padding:1px 5px;border-radius:3px}
+</style></head><body>
+<h1>Gateway on %(host)s</h1>
+<p class="muted">This page only opens on this PC. Phones reach the gateway on port %(port)s over Tailscale.</p>
+<h2>Pair a phone</h2>
+<div class="row">
+ <div class="qr"><img id="qr" alt="Pairing QR code: the gateway address and a one-time pairing code" src="/yay/network/gateway_qr"></div>
+ <div>
+  <ol>
+   <li>On the phone, open <b>TrXi-Ctrl → Settings</b>.</li>
+   <li>Tap the <b>QR-scanner icon</b> beside the gateway address and point the camera at this code.</li>
+   <li>The phone fills in the gateway address and pairs.</li>
+  </ol>
+  <p class="muted">The code works once and expires after 10 minutes.</p>
+  <button onclick="document.getElementById('qr').src='/yay/network/gateway_qr?'+Date.now()">New code</button>
+  <p class="muted">No QR? Check Tailscale is up: <code>ip -4 addr show tailscale0</code> must show a 100.x address
+  (if not: <code>systemctl restart tailscaled</code>).</p>
+ </div>
+</div>
+<h2>Devices</h2>
+<p class="muted">Every phone that has reached the gateway: on Tailscale by its Tailscale name (the MAC
+isn't visible across Tailscale), on the home network by its MAC. <b>Online</b> = seen in the last 2 minutes.</p>
+<p><label><input type="checkbox" id="wl"> Only allow ticked devices (whitelist). Everything else is refused,
+pairing included, and listed here as <b>blocked</b> so you can tick it. This PC is always allowed.</label></p>
+<table><thead><tr><th>Allowed</th><th>Device</th><th>Connection</th><th>Address</th><th>Paired as</th><th>Status</th></tr></thead>
+<tbody id="devs"><tr><td colspan=6 class="muted">Loading…</td></tr></tbody></table>
+<p><label>Add by MAC or key: <input id="addkey" placeholder="aa:bb:cc:dd:ee:ff or ts:name"
+ style="background:#000;color:#fff;border:1px solid #888;padding:4px"></label>
+ <button id="add">Add</button> <button id="savedev">Save</button> <span id="devmsg" role="status" aria-live="polite"></span></p>
+<p class="muted">Turning the whitelist on with nothing ticked locks every phone out. Android uses a separate
+random MAC per Wi-Fi network, so a phone can show a different MAC on another network.</p>
+<script>
+let dv = null, dirty = false;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function drawDevs() {
+  const keys = new Set([...dv.seen.map(s => s.key), ...dv.allow]);
+  const by = Object.fromEntries(dv.seen.map(s => [s.key, s]));
+  const rows = [...keys].sort((a, b) => ((by[b] || {}).last || 0) - ((by[a] || {}).last || 0));
+  document.getElementById('wl').checked = dv.whitelist;
+  document.getElementById('devs').innerHTML = rows.map(k => {
+    const s = by[k] || {}, age = s.last ? dv.now - s.last : Infinity;
+    const st = s.blocked && dv.whitelist && !dv.allow.includes(k) ? '<b style="color:#f87171">blocked</b>'
+      : age < 120 ? '<b style="color:#4ade80">online</b>'
+      : s.last ? 'last seen ' + new Date(s.last * 1000).toLocaleString() : 'never seen';
+    return `<tr><td><input type="checkbox" data-k="${esc(k)}" ${dv.allow.includes(k) ? 'checked' : ''}
+      aria-label="Allow ${esc(s.label || k)}"></td><td>${esc(s.label || '')}</td><td>${esc(k)}</td>
+      <td>${esc(s.ip)}</td><td>${esc(s.name)}</td><td>${st}</td></tr>`;
+  }).join('') || '<tr><td colspan=6 class="muted">No phone has connected yet.</td></tr>';
+  document.querySelectorAll('#devs input').forEach(c => c.onchange = () => {
+    dirty = true; dv.allow = dv.allow.filter(x => x !== c.dataset.k).concat(c.checked ? [c.dataset.k] : []); });
+}
+async function loadDevs() { if (!dirty) { dv = await (await fetch('/admin/devices')).json(); drawDevs(); } }
+document.getElementById('wl').onchange = e => { dirty = true; dv.whitelist = e.target.checked; drawDevs(); };
+document.getElementById('add').onclick = () => {
+  let k = document.getElementById('addkey').value.trim().toLowerCase();
+  if (/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/.test(k)) k = 'mac:' + k.replace(/-/g, ':');
+  else if (!/^(mac|ts|ip|name):./.test(k)) { document.getElementById('devmsg').textContent = 'Enter a MAC (aa:bb:cc:dd:ee:ff) or a key like ts:pixel-8'; return; }
+  if (!dv.allow.includes(k)) dv.allow.push(k);
+  dirty = true; document.getElementById('addkey').value = ''; drawDevs();
+};
+document.getElementById('savedev').onclick = async () => {
+  const r = await fetch('/admin/devices', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({whitelist: dv.whitelist, allow: dv.allow})});
+  document.getElementById('devmsg').textContent = r.ok ? 'Saved.' : 'Not saved: ' + r.status;
+  if (r.ok) { dirty = false; loadDevs(); }
+};
+loadDevs(); setInterval(loadDevs, 5000);
+</script>
+<h2>Clipboard sharing</h2>
+<p>%(clips)s items in the shared history · %(named)s named devices · <a href="/admin/clipboard">who receives from whom →</a></p>
+<h2>App updates</h2>
+<table><thead><tr><th>App</th><th>Version</th><th>Published</th></tr></thead><tbody>%(apps)s</tbody></table>
+<p class="muted">Phones install these from TrXi-Ctrl → Updates. Publish a new build with
+<code>python3 capabilities/app_updates.py publish --flutter &lt;project&gt; --package &lt;id&gt; --name &lt;name&gt;</code></p>
+</body></html>"""
 
 DEFAULT_SOCKET = "/run/trixie-gateway.sock"
 DEFAULT_PORT   = 8772
@@ -200,7 +286,16 @@ class TrixieGateway:
     def _build_app(self) -> web.Application:
         @web.middleware
         async def auth_middleware(req: web.Request, handler):
-            if req.path.startswith("/admin/"):      # settings pages: this PC only
+            if not clip_rules.is_local(req.remote):   # device list + whitelist
+                tok = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+                name = (tok and self.broker.subject(tok)) or "unknown"
+                if not self._rules.admit(req.remote, name):
+                    return web.json_response(
+                        {"error": "this device is not on the gateway's whitelist "
+                                  "(allow it on the PC: /admin)"}, status=403)
+            if req.path.startswith("/dl/"):         # app share links: the token
+                return await handler(req)           # in the URL is the key
+            if req.path == "/admin" or req.path.startswith("/admin/"):  # this PC only
                 if not clip_rules.is_local(req.remote):
                     return web.json_response({"error": "admin pages are local only"}, status=403)
                 return await handler(req)
@@ -302,8 +397,17 @@ class TrixieGateway:
         app.router.add_post("/yay/clipboard/{id}/lock",     self._clipboard_lock)
         app.router.add_post("/yay/clipboard/{id}/pc",       self._clipboard_to_pc)
         app.router.add_post("/yay/clipboard/{id}/save",     self._clipboard_save)
+        # Phone app updates (capabilities/app_updates.py)
+        app.router.add_get( "/yay/updates",                 self._updates_list)
+        app.router.add_get( "/yay/updates/{package}/{abi}", self._updates_download)
+        app.router.add_post("/yay/updates/{package}/share", self._updates_share)
+        app.router.add_get( "/dl/{token}/{name}",           self._updates_shared)
+        app.router.add_get( "/admin/",                      self._admin_home)
+        app.router.add_get( "/admin",                       self._admin_home)
         app.router.add_get( "/admin/clipboard",             self._clip_admin_page)
         app.router.add_get( "/admin/config",                self._clip_admin_get)
+        app.router.add_get( "/admin/devices",               self._devices_get)
+        app.router.add_post("/admin/devices",               self._devices_set)
         app.router.add_post("/admin/config",                self._clip_admin_set)
         # Firewall
         app.router.add_get( "/yay/firewall/rules",          self._fw_rules)
@@ -931,11 +1035,77 @@ class TrixieGateway:
             return item
         return None
 
+    # ── Phone app updates ─────────────────────────────────────────────────────
+
+    async def _updates_list(self, req: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "apps": app_updates.list_apps()})
+
+    async def _updates_download(self, req: web.Request):
+        p = app_updates.apk_path(req.match_info["package"], req.match_info["abi"])
+        if not p:
+            return web.json_response({"ok": False, "error": "no such app"}, status=404)
+        return web.FileResponse(p, headers={
+            "Content-Type": "application/vnd.android.package-archive"})
+
+    async def _updates_share(self, req: web.Request) -> web.Response:
+        """A 24 h download link (no token needed), posted to the shared
+        clipboard as this device's item, so others can tap it."""
+        body = await req.json() if req.can_read_body else {}
+        pkg = req.match_info["package"]
+        r = app_updates.share(pkg, str(body.get("abi") or "arm64-v8a"))
+        if not r:
+            return web.json_response({"ok": False, "error": "no such app"}, status=404)
+        token, fname, expires = r
+        url = "%s://%s/dl/%s/%s" % (req.scheme, req.host, token, fname)
+        app = next((a for a in app_updates.list_apps() if a["package"] == pkg), {})
+        text = "%s %s — install link (valid until %s): %s" % (
+            app.get("name", pkg), app.get("version", ""),
+            time.strftime("%d %b %H:%M", time.localtime(expires)), url)
+        device, key = self._clip_ident(req)
+        self._clip.add(text, device, key, body.get("to") or None)
+        self.journal.append("clipboard_set", device)
+        return web.json_response({"ok": True, "url": url, "expires": expires})
+
+    async def _updates_shared(self, req: web.Request):
+        p, fname = app_updates.resolve_share(req.match_info["token"])
+        if not p:
+            return web.Response(status=404, text="This link has expired or is unknown.")
+        return web.FileResponse(p, headers={
+            "Content-Type": "application/vnd.android.package-archive",
+            "Content-Disposition": 'attachment; filename="%s"' % fname})
+
+    async def _admin_home(self, req: web.Request) -> web.Response:
+        """Local-only home page: pair a phone (QR), status, app updates,
+        links to the other settings pages."""
+        import html as _h
+        apps = "".join(
+            "<tr><td>%s</td><td>%s (build %s)</td><td>%s</td></tr>" % (
+                _h.escape(a["name"]), _h.escape(a["version"]), a["code"],
+                _h.escape(a["published"]))
+            for a in app_updates.list_apps()) or \
+            "<tr><td colspan=3>None published yet.</td></tr>"
+        clips = len(self._clip.items)
+        named = len(self._rules.devices)
+        page = ADMIN_HOME % {"apps": apps, "clips": clips, "named": named,
+                             "port": self.port, "host": _h.escape(platform.node())}
+        return web.Response(text=page, content_type="text/html")
+
     async def _clip_admin_page(self, req: web.Request) -> web.Response:
         return web.Response(text=clip_rules.ADMIN_HTML, content_type="text/html")
 
     async def _clip_admin_get(self, req: web.Request) -> web.Response:
         return web.json_response(self._rules.data())
+
+    async def _devices_get(self, req: web.Request) -> web.Response:
+        r = self._rules
+        return web.json_response({
+            "whitelist": r.whitelist, "allow": r.allow, "now": time.time(),
+            "seen": [dict(v, key=k, label=r.label_of_key(k)) for k, v in r.seen.items()]})
+
+    async def _devices_set(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        self._rules.set_whitelist(body.get("whitelist"), body.get("allow") or [])
+        return web.json_response({"ok": True})
 
     async def _clip_admin_set(self, req: web.Request) -> web.Response:
         body = await req.json()
@@ -1456,7 +1626,6 @@ async def _wpa_cli_connect(iface: str, ssid: str, password: str) -> tuple[bool, 
     ok, msg = await wpa("reconnect")
     return ok, msg
 
-
 async def _wpa_start_and_connect(iface: str, ssid: str, password: str) -> tuple[bool, str]:
     conf_path = Path(f"/tmp/wpa_{iface}.conf")
     if password:
@@ -1491,7 +1660,6 @@ async def _wpa_start_and_connect(iface: str, ssid: str, password: str) -> tuple[
             break
     return rc2 == 0, (out2 + err2).strip()
 
-
 async def _run_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1509,7 +1677,6 @@ async def _run_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
         return 1, "", "timeout"
     except FileNotFoundError:
         return 1, "", f"{cmd[0]}: not found"
-
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -1563,7 +1730,6 @@ def main():
         loop.close()
         if args.pidfile and args.pidfile.exists():
             args.pidfile.unlink(missing_ok=True)
-
 
 if __name__ == "__main__":
     main()

@@ -1,3 +1,9 @@
+# Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
+# Licensed under the PolyForm Strict License 1.0.0
+# (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
+# non-commercial use; no redistribution, modified versions or sale.
+# Commercial licences: cou645@gmail.com
+# Donations via PayPal: cou645@gmail.com
 """Per-OS backends for the capabilities that talk to the desktop.
 
 The gateway was written against Linux/X11: xdotool for input, wmctrl for
@@ -18,6 +24,7 @@ instead of showing buttons that silently do nothing.
 """
 
 import logging
+import os
 import platform
 import sys
 
@@ -33,6 +40,32 @@ else:
     HOST_OS = sys.platform
 
 
+# Wayland vs X11 is a session choice, not an OS -- only meaningful when
+# HOST_OS == "linux". Checks the actual socket, not just whether
+# WAYLAND_DISPLAY is set: trixie-gateway.service sets both DISPLAY and
+# WAYLAND_DISPLAY unconditionally (systemd inherits neither from the boot-time
+# session picker's choice), so on an X11 boot WAYLAND_DISPLAY would otherwise
+# be set to a socket that doesn't exist -- see trixie-gateway.service's
+# comment on this. XDG_SESSION_TYPE is checked first since it's authoritative
+# when present; the socket check is the fallback for when it isn't (e.g. a
+# manually-launched compositor outside a login manager).
+def _detect_linux_session() -> str:
+    if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+        return "wayland"
+    if os.environ.get("XDG_SESSION_TYPE") == "x11":
+        return "x11"
+    wd = os.environ.get("WAYLAND_DISPLAY")
+    if wd:
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        sock = wd if os.path.isabs(wd) else os.path.join(runtime_dir, wd)
+        if os.path.exists(sock):
+            return "wayland"
+    return "x11"
+
+
+LINUX_SESSION = _detect_linux_session()
+
+
 def _load():
     if HOST_OS == "windows":
         from . import windows
@@ -40,7 +73,10 @@ def _load():
     if HOST_OS == "macos":
         from . import macos
         return macos
-    return None  # Linux keeps its own in-module implementations
+    if HOST_OS == "linux" and LINUX_SESSION == "wayland":
+        from . import linux_wayland
+        return linux_wayland
+    return None  # Linux/X11 keeps its own in-module implementations
 
 
 try:

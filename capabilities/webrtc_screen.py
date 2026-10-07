@@ -1,3 +1,9 @@
+# Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
+# Licensed under the PolyForm Strict License 1.0.0
+# (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
+# non-commercial use; no redistribution, modified versions or sale.
+# Commercial licences: cou645@gmail.com
+# Donations via PayPal: cou645@gmail.com
 """WebRTC screen streaming capability — X11 display + audio → phone via aiortc.
 
 Both the video and audio capture are SHARED across peers: one ffmpeg
@@ -28,6 +34,7 @@ import time
 
 import av
 from aiortc import RTCPeerConnection, RTCSessionDescription, AudioStreamTrack, VideoStreamTrack
+from PIL import ImageDraw
 
 from platforms import backend as _backend
 
@@ -37,6 +44,33 @@ except ImportError:            # imported directly (tests put capabilities/ on s
     import vaapi_h264
 
 LOG = logging.getLogger("trixie-gateway.webrtc")
+
+_CURSOR_COLORS = [
+    (255, 64, 64), (64, 160, 255), (64, 220, 120), (255, 200, 40), (220, 80, 220),
+]
+
+
+def _draw_peer_cursors(frame: av.VideoFrame, real_w: int, real_h: int) -> av.VideoFrame:
+    """Draws a labeled marker per paired device at its last-known pointer
+    position (capabilities.desktop_input.peer_cursors), so a multi-phone
+    session can see who's pointing where. The real OS-level cursor stays a
+    single shared resource -- this is purely a visual aid on the outgoing
+    stream, not independent per-device control (this box's compositor has
+    no multi-seat support to make that real)."""
+    from capabilities import desktop_input
+    cursors = desktop_input.peer_cursors
+    if not cursors or not real_w or not real_h:
+        return frame
+    img = frame.to_image()
+    draw = ImageDraw.Draw(img)
+    sx, sy = img.width / real_w, img.height / real_h
+    for i, (device, (x, y)) in enumerate(sorted(cursors.items())):
+        color = _CURSOR_COLORS[i % len(_CURSOR_COLORS)]
+        fx, fy = x * sx, y * sy
+        r = 8
+        draw.ellipse([fx - r, fy - r, fx + r, fy + r], outline=color, width=3)
+        draw.text((fx + r + 2, fy - r), device[:16], fill=color)
+    return av.VideoFrame.from_image(img)
 
 
 def _clone_frame(frame: av.VideoFrame) -> av.VideoFrame:
@@ -102,7 +136,13 @@ class SharedX11Capture:
     def _open(self):
         # x11grab on Linux; gdigrab (Windows) / avfoundation (macOS) via the
         # platform backend. Same PyAV pipeline either way -- only the input
-        # url, format and options differ.
+        # url, format and options differ. Wayland has no ffmpeg demuxer for
+        # its capture protocol at all (frames are shm buffers the client
+        # pulls itself), so it skips av.open() entirely -- see _grab_one().
+        if _backend and hasattr(_backend, "capture_frame"):
+            self._container = None
+            self._stream = None
+            return
         if _backend:
             url, fmt, opts = _backend.capture_spec(
                 self._display, self._width, self._height, self._framerate)
@@ -154,11 +194,25 @@ class SharedX11Capture:
     async def _capture_loop(self) -> None:
         loop = asyncio.get_event_loop()
         frame_interval = 1.0 / self._framerate
+        # Input coordinates (desktop_input.mouse_move etc.) are in real
+        # desktop pixel space regardless of what resolution the stream was
+        # negotiated at, so cursor markers need this to scale into frame
+        # space. Fetched once per capture session -- display size doesn't
+        # change mid-session.
+        real_w, real_h = self._width, self._height
+        try:
+            from capabilities import desktop_input
+            size = await desktop_input.get_display_size()
+            if size.get("ok"):
+                real_w, real_h = size["width"], size["height"]
+        except Exception:
+            pass
         try:
             while True:
                 t0 = time.monotonic()
                 frame = await loop.run_in_executor(None, self._grab_one)
                 if frame is not None:
+                    frame = _draw_peer_cursors(frame, real_w, real_h)
                     self._latest_frame = frame
                     self._frame_seq += 1
                     self._new_frame.set()
@@ -169,6 +223,29 @@ class SharedX11Capture:
             pass
 
     def _grab_one(self):
+        if _backend and hasattr(_backend, "capture_frame"):
+            got = _backend.capture_frame()
+            if got is None:
+                return None
+            data, w, h, stride = got
+            frame = av.VideoFrame(width=w, height=h, format="bgra")
+            plane = frame.planes[0]
+            if plane.line_size == stride:
+                plane.update(data)
+            else:  # compositor padded its stride -- repack into the plane's own
+                row_bytes = w * 4
+                dest = bytearray(plane.line_size * h)
+                for y in range(h):
+                    dest[y * plane.line_size: y * plane.line_size + row_bytes] = \
+                        data[y * stride: y * stride + row_bytes]
+                plane.update(bytes(dest))
+            # The compositor always hands back the output's native size --
+            # unlike ffmpeg's video_size option for x11grab, this protocol has
+            # no request-time scaling, so scale here to match what the peer
+            # actually negotiated (self._width/_height from acquire()).
+            if (w, h) != (self._width, self._height):
+                frame = frame.reformat(width=self._width, height=self._height)
+            return frame
         try:
             pkt = next(self._container.demux(self._stream))
             frames = list(pkt.decode())

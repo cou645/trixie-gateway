@@ -99,6 +99,32 @@ received real decoded frames (953/303 over 4s), `/yay/webrtc/peers`
 tracked both correctly, and closing one at a time released the shared
 video/audio capture cleanly with no errors in the log.
 
+## Wayland/wlroots support (2026-09-23)
+
+This box's boot-time session picker offers X11 or Wayland; the gateway now
+works under either, auto-detected at import time from `XDG_SESSION_TYPE` /
+`WAYLAND_DISPLAY` (see `platforms/__init__.py`). No config needed beyond
+what's already in the systemd unit (`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`, same
+reason `DISPLAY`/`XAUTHORITY` are needed above — systemd doesn't inherit a
+login session's environment). Runtime requirements:
+
+- `pywayland` + `evdev` (in `requirements.txt`).
+- Read/write access to `/dev/uinput` (input injection synthesizes events
+  directly via `evdev.UInput` — no `ydotool`/virtual-pointer-protocol
+  dependency, since this box's compositor doesn't implement one).
+- A compositor implementing `ext-image-copy-capture-v1` +
+  `ext-image-capture-source-v1` (screen capture) and
+  `wlr-foreign-toplevel-management-unstable-v1` (window list/activate/
+  close/minimize/maximize). Confirmed present on `mango`; these are
+  wlroots-ecosystem protocols, not guaranteed on every Wayland compositor
+  (GNOME/KDE use the portal model instead, out of scope here).
+
+**Known permanent gaps vs. X11** (surfaced via `/yay/capabilities`'s
+`backend.caveats`, not bugs to fix): no arbitrary window move/resize or
+fullscreen toggle (no such request exists in the management protocol), no
+workspace/virtual-desktop support (not wired up — `wm.py`'s desktop
+functions already report unsupported for every backend, not just this one).
+
 ## Known snag (2026-08-29) — resolved 2026-08-31
 
 The systemd unit was **installed but disabled** because an earlier draft had
@@ -215,3 +241,19 @@ heuristics, and an unsigned .exe already has enough of a SmartScreen problem.
 Signing (Authenticode on Windows, notarisation on macOS) needs paid
 certificates and is not wired up here; without it users see a warning they must
 click past on first run.
+
+## Troubleshooting: phones can't reach the gateway
+
+If phones show "offline" (or Chameleon Companion can't reach the IDE on 8765)
+while `tailscale status` looks fine, check the PC still has its Tailscale address:
+
+    ip -4 addr show tailscale0        # must show inet 100.x.y.z
+
+If it's missing (tailscale0 loses its address when NetworkManager reconfigures
+it after a Wi-Fi reconnect): `systemctl restart tailscaled`, and stop it
+recurring with `/etc/NetworkManager/conf.d/99-tailscale-unmanaged.conf`:
+
+    [keyfile]
+    unmanaged-devices=interface-name:tailscale0
+
+then `nmcli general reload conf`.
