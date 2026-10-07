@@ -55,7 +55,7 @@ provider from `/aufs/devbase/chameleon/api_keys.env`:
 
 ```json
 {
-  "capabilities": { "allow_unauthenticated": true },
+  "capabilities": { "allow_unauthenticated": false },
   "providers": {
     "<name>": { "api_key": "...", "url": "https://…", "default_model": "…" }
   }

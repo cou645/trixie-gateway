@@ -20,7 +20,7 @@ aiohttp gateway (PC side of the TrXi-Ctrl phone app). Runs as systemd
 Second instance with its own HOME/config (auth off):
 ```
 HOME=$SP/home nohup /root/pyqt6-venv/bin/python gateway.py --port 8799 \
-  --socket $SP/gw.sock --config $SP/config.json &   # config: {"allow_unauthenticated": true}
+  --socket $SP/gw.sock --config $SP/config.json &   # config: {"capabilities": {"allow_unauthenticated": true}} (only works from this PC)
 ```
 Stop it by PID, not `pkill -f "gateway.py --port 8799"` from the same shell —
 that pattern matches the shell's own command line and kills it.
@@ -31,3 +31,7 @@ same `capabilities/` module the REST routes use — follow that pattern.
 Desktop control panel: `gateway_manager.py` (PySide6, launcher
 `~/.local/share/applications/custom-gateway-manager.desktop`), which does
 start/stop/restart of the free or Pro unit, shows the pairing QR, and tails the journal.
+
+Security regression tests (cross-site/DNS-rebinding refusal, auth on by
+default): `/root/pyside6-venv/bin/python3 test_security.py` (starts its own
+throwaway gateways; run after touching auth_middleware). Same file in -pro.

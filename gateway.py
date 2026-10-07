@@ -239,17 +239,21 @@ async def platform_guard_middleware(req: web.Request, handler):
     return await handler(req)
 
 
-@web.middleware
-async def cors_middleware(req: web.Request, handler):
-    if req.method == "OPTIONS":
-        return web.Response(headers={
-            "Access-Control-Allow-Origin":  "*",
-            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        })
-    resp = await handler(req)
-    resp.headers.setdefault("Access-Control-Allow-Origin", "*")
-    return resp
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
+
+
+def _browser_foreign(req: web.Request) -> bool:
+    """A loopback request that a web page on another site made through this
+    PC's browser (or a DNS-rebinding name pointing at 127.0.0.1). Loopback is
+    trusted for /admin, pairing and the QR, so a page on any website could
+    otherwise pair itself and run commands. Native clients (the apps, curl,
+    Gateway Manager) send no Origin and use a localhost Host."""
+    host = req.host.rsplit(":", 1)[0] if not req.host.startswith("[") \
+        else req.host.split("]")[0] + "]"
+    if host not in _LOCAL_HOSTS:
+        return True
+    origin = req.headers.get("Origin")
+    return origin is not None and origin != f"{req.scheme}://{req.host}"
 
 
 class TrixieGateway:
@@ -257,7 +261,7 @@ class TrixieGateway:
         self.wifi_iface = wifi_iface
         self.config_path = Path(config_path)
         self.config = self._load_config(self.config_path)
-        self.broker  = CapabilityBroker(self.config.get("capabilities", {"allow_unauthenticated": True}))
+        self.broker  = CapabilityBroker(self.config.get("capabilities", {}))
         self._pairing_code    = None
         self._pairing_expires = 0.0
         self._pairing_used    = True
@@ -298,6 +302,9 @@ class TrixieGateway:
     def _build_app(self) -> web.Application:
         @web.middleware
         async def auth_middleware(req: web.Request, handler):
+            if req.remote and clip_rules.is_local(req.remote) and _browser_foreign(req):
+                return web.json_response(
+                    {"error": "cross-site request refused"}, status=403)
             if not clip_rules.is_local(req.remote):   # device list + whitelist
                 tok = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
                 name = (tok and self.broker.subject(tok)) or "unknown"
@@ -314,14 +321,16 @@ class TrixieGateway:
             if (req.method, req.path) in _PUBLIC_ROUTES or not req.remote:
                 return await handler(req)
             token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-            if not self.broker.validate(token, scope="device"):
+            # allow_unauthenticated (testing) never reaches beyond this PC
+            if not (token or clip_rules.is_local(req.remote)) or \
+                    not self.broker.validate(token, scope="device"):
                 return web.json_response(
                     {"error": "missing or invalid capability token — pair via /yay/pair"},
                     status=401)
             req["device"] = self.broker.subject(token)
             return await handler(req)
 
-        app = web.Application(middlewares=[cors_middleware, auth_middleware,
+        app = web.Application(middlewares=[auth_middleware,
                                            platform_guard_middleware,
                                            normalize_path_middleware()])
         # OpenAI-compatible
