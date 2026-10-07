@@ -110,7 +110,8 @@ class Manager(QWidget):
                 pix = QPixmap()
                 pix.loadFromData(self.png)
                 self.qr.setPixmap(pix.scaled(280, 280, Qt.KeepAspectRatio))
-                self.url.setText(r.headers.get("X-Gateway-URL", ""))
+                self.url.setText("%s    code: %s" % (r.headers.get("X-Gateway-URL", ""),
+                                                   r.headers.get("X-Pairing-Code", "")))
         except urllib.error.HTTPError as e:
             self.png = None
             self.qr.setText(e.read().decode(errors="replace"))

@@ -81,15 +81,27 @@ ADMIN_HOME = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <p class="muted">This page only opens on this PC. Phones reach the gateway on port %(port)s over Tailscale.</p>
 <h2>Pair a phone</h2>
 <div class="row">
- <div class="qr"><img id="qr" alt="Pairing QR code: the gateway address and a one-time pairing code" src="/yay/network/gateway_qr"></div>
+ <div class="qr"><img id="qr" alt="Pairing QR code: the gateway address and a one-time pairing code"></div>
  <div>
   <ol>
    <li>On the phone, open <b>TrXi-Ctrl → Settings</b>.</li>
    <li>Tap the <b>QR-scanner icon</b> beside the gateway address and point the camera at this code.</li>
    <li>The phone fills in the gateway address and pairs.</li>
   </ol>
+  <p>No camera (Windows/Linux app)? In <b>Settings</b> enter the gateway address and this code:</p>
+  <p role="status" aria-live="polite" style="font-size:1.3em"><code id="paircode">…</code> &nbsp;<span id="gwurl" class="muted"></span></p>
   <p class="muted">The code works once and expires after 10 minutes.</p>
-  <button onclick="document.getElementById('qr').src='/yay/network/gateway_qr?'+Date.now()">New code</button>
+  <button onclick="loadQr()">New code</button>
+  <script>
+  async function loadQr() {
+    const r = await fetch('/yay/network/gateway_qr?' + Date.now());
+    if (!r.ok) { document.getElementById('paircode').textContent = (await r.json()).error; return; }
+    document.getElementById('qr').src = URL.createObjectURL(await r.blob());
+    document.getElementById('paircode').textContent = r.headers.get('X-Pairing-Code');
+    document.getElementById('gwurl').textContent = r.headers.get('X-Gateway-URL');
+  }
+  loadQr();
+  </script>
   <p class="muted">No QR? Check Tailscale is up: <code>ip -4 addr show tailscale0</code> must show a 100.x address
   (if not: <code>systemctl restart tailscaled</code>).</p>
  </div>
@@ -774,7 +786,8 @@ class TrixieGateway:
             return web.json_response(
                 {"error": "tailscale IP not available — is tailscale up?"}, status=503)
         url = f"http://{ip}:{self.port}"
-        payload = json.dumps({"url": url, "pair": self._new_pairing_code()})
+        code = self._new_pairing_code()
+        payload = json.dumps({"url": url, "pair": code})
         try:
             proc = await asyncio.create_subprocess_exec(
                 "qrencode", "-o", "-", "-t", "PNG", "-s", "8", payload,
@@ -786,8 +799,9 @@ class TrixieGateway:
         if proc.returncode != 0 or not png:
             return web.json_response(
                 {"error": (err or b"qrencode failed").decode(errors="replace")}, status=500)
+        # the code as text too: desktop apps without a camera type it in
         return web.Response(body=png, content_type="image/png",
-                            headers={"X-Gateway-URL": url})
+                            headers={"X-Gateway-URL": url, "X-Pairing-Code": code})
 
     async def _wifi_scan(self, req: web.Request) -> web.Response:
         iface = req.rel_url.query.get("iface", self.wifi_iface)
