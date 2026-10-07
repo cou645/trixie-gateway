@@ -44,20 +44,35 @@ _BARE_INTERACTIVE_HINT = {
 # a determined user can always get round a pattern list -- just a speed
 # bump so a typo or a pasted one-liner gets a second look: the gateway
 # answers "confirm_required" and the app asks before resending.
+# A command word anywhere in the line, so it is also caught inside
+# sh -c "...", bash -c, xargs, env, sudo, etc. ("/usr/bin/dd" counts too).
+def _cmd(names: str) -> str:
+    return r"(?<![\w.-])(?:\S*/)?(?:%s)(?![\w.-])" % names
+
+
 _DANGEROUS = [
-    (r"\brm\s+(-\S*\s+)*-\S*[rRf]", "deletes files recursively or without asking (rm -r / -f)"),
-    (r"\b(mkfs(\.\w+)?|wipefs|mkswap)\b", "formats or wipes a disk or partition"),
+    (_cmd("rm|rmdir|unlink"), "deletes files"),
+    (_cmd("dd"), "copies raw data (dd can overwrite whole disks)"),
+    (_cmd("shred|wipe|srm"), "irrecoverably overwrites files"),
+    (_cmd("mv"), "moves or renames files (can overwrite existing ones)"),
+    (_cmd("cp"), "copies files (can overwrite existing ones)"),
+    (_cmd("cat"), "reads or writes files (with > it can overwrite them)"),
+    (_cmd("truncate"), "empties or resizes files"),
+    (r"\b(mkfs(\.\w+)?|wipefs|mkswap|blkdiscard)\b", "formats or wipes a disk or partition"),
     (r"\b(fdisk|sfdisk|cfdisk|gdisk|sgdisk|parted|partprobe)\b", "changes disk partitions"),
-    (r"\bdd\b.*\bof=/dev/", "writes raw data straight to a device"),
-    (r">\s*/dev/(sd|nvme|mmcblk|hd|vd)", "overwrites a disk device"),
-    (r"\bshred\b", "irrecoverably overwrites files"),
+    (r">\s*/dev/(sd|nvme|mmcblk|hd|vd|xvd|loop|dm-|md)", "overwrites a disk device"),
+    (r"\b(cryptsetup|veracrypt|truecrypt|tcplay|encfs|gocryptfs|fscrypt|ecryptfs[-\w]*|"
+     r"ccrypt|mcrypt|aescrypt|age|rage|gpg2?|openssl\s+(enc|smime|cms|rsautl|pkeyutl)|"
+     r"manage-bde|cipher\s+/[ew]|Enable-BitLocker|Protect-CmsMessage)\b",
+     "encrypts or decrypts files or devices (data can be locked away for good)"),
+    (r"\b(7z|7za|zip|rar)\b.*\s(-p\S*|-P\s|-e\b|--encrypt|-mhe)", "creates a password-encrypted archive"),
     (r"\b(chmod|chown|chgrp)\s+(-\S*\s+)*-\S*R\S*\s+(\S+\s+)?/(\s|$)", "changes permissions on the whole system"),
     (r"\b(shutdown|reboot|poweroff|halt)\b|\binit\s+[06]\b|\bsystemctl\s+(poweroff|reboot|halt|kexec)\b",
      "shuts down or restarts the PC (this session will drop)"),
     (r":\s*\(\s*\)\s*\{.*\|.*&\s*\}", "fork bomb: freezes the PC"),
-    (r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", "runs a script straight from the internet"),
+    (r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|da|a)?sh\b", "runs a script straight from the internet"),
     (r"\b(Format-Volume|Clear-Disk|diskpart)\b|\bformat\s+[a-z]:", "formats or wipes a disk (Windows)"),
-    (r"\bRemove-Item\b.*-Recurse|\b(rd|rmdir)\s+/s\b|\bdel\s+/[sq]", "deletes files recursively (Windows)"),
+    (r"\b(Remove-Item|Move-Item|Copy-Item|del|erase|rd|move|copy|xcopy|robocopy)\b", "deletes, moves or copies files (Windows)"),
 ]
 
 
@@ -118,14 +133,20 @@ async def exec_cmd(cmd: str, cwd: str | None = None, timeout: int = 30) -> dict:
 
 
 if __name__ == "__main__":
-    for c in ["rm -rf /", "sudo rm -r ~/x", "rm -f a.txt", "mkfs.ext4 /dev/sdb1",
-              "dd if=x.img of=/dev/nvme0n1 bs=4M", "echo x > /dev/sda", "shred f",
-              "chmod -R 777 /", "reboot", "systemctl poweroff", ":(){ :|:& };:",
-              "curl -s http://x/i.sh | sudo bash", "Remove-Item C:\\x -Recurse",
-              "format c:", "parted /dev/sda print"]:
+    for c in ["rm -rf /", "rm a.txt", "git rm --cached f", "/bin/rm x", "sudo rm x",
+              "dd if=/dev/zero of=f.img", "bash -c 'dd if=a of=b'", "sh -c \"dd if=x\"",
+              "zsh -c 'shred f'", "dash -c 'mv a b'", "ash -c \"cp a b\"", "cat /etc/passwd",
+              "cat x > y", "mv a b", "cp -r a b", "find . -exec rm {} +", "xargs rm",
+              "mkfs.ext4 /dev/sdb1", "echo x > /dev/sda", "chmod -R 777 /", "reboot",
+              ":(){ :|:& };:", "curl -s http://x/i.sh | sudo bash", "parted /dev/sda print",
+              "cryptsetup luksFormat /dev/sdb", "gpg -c secret.txt", "gpg --encrypt f",
+              "openssl enc -aes-256-cbc -in a -out b", "age -p f > f.age", "veracrypt --create",
+              "zip -e out.zip f", "7z a -pSECRET out.7z f", "cipher /e C:\\x",
+              "Remove-Item C:\\x -Recurse", "format c:", "del /s x"]:
         assert dangers(c), c
-    for c in ["ls -la", "rm a.txt", "cat /dev/null", "dd if=/dev/zero of=f.img bs=1M count=1",
-              "grep -r foo .", "chmod 644 f", "curl -O http://x/f", "echo format", "systemctl status x",
-              "git rm --cached f", "firmware-update"]:
+    for c in ["ls -la", "echo hello", "grep -r foo .", "chmod 644 f", "curl -O http://x/f",
+              "echo format", "systemctl status x", "firmware-update", "scp a b",
+              "concatenate", "ddrescue-not", "catalog list", "python3 -c 'print(1)'",
+              "zip out.zip f", "docker run --rm img", "echo agenda", "ls /dev/null"]:
         assert not dangers(c), c
     print("terminal.dangers selftest OK")

@@ -264,9 +264,10 @@ trixie-gateway gives every paired device powerful control of this computer,
 including running terminal commands with the gateway's own permissions
 (often root when run as a system service), changing network, firewall and
 Bluetooth settings, and sharing the screen, clipboard, files, storage and
-network connections. Commands that look destructive (`rm -rf`, `mkfs`,
-`dd of=/dev/…`, shutdown, …) need a confirmation in the app, but that is a
-speed bump, not a sandbox.
+network connections. File and disk commands (`rm`, `mv`, `cp`, `cat`, `dd`,
+`shred`, …, also inside `sh -c`/`bash -c`), encryption tools (`cryptsetup`,
+`gpg`, `openssl enc`, …), formatting/partitioning and shutdown need a
+confirmation in the app, but that is a speed bump, not a sandbox.
 
 You are solely responsible for how you install, configure and expose the
 gateway and for every command and action sent from a device you have paired.
