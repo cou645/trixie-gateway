@@ -5,7 +5,7 @@
 # Linux needs none of these: it reads procfs/sysfs directly and drives
 # xdotool/wmctrl/amixer, which are system packages, not Python ones.
 
-psutil>=5.9                             ; sys_platform != "linux"
+psutil>=7.2.2                             ; sys_platform != "linux"
 
 # Windows: Core Audio volume/mute is COM, so it needs pycaw (+comtypes).
 # Input, window control and screen capture use ctypes/user32 and ffmpeg
