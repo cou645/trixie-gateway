@@ -1989,4 +1989,10 @@ def main():
             args.pidfile.unlink(missing_ok=True)
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["--root-helper"]:
+        # the single-file binary is also the root helper (G6):
+        #   sudo trixie-gateway --root-helper --user NAME
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        root_helper.main()
+    else:
+        main()

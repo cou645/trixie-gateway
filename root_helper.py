@@ -256,7 +256,7 @@ async def call(method: str, path: str, body: dict | None = None, query: dict | N
         writer.close()
 
 
-if __name__ == "__main__":
+def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--user", required=True, help="the account the gateway runs as")
     p.add_argument("--socket", default=SOCKET)
@@ -266,3 +266,7 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
     asyncio.run(serve(a.user, a.socket))
+
+
+if __name__ == "__main__":
+    main()
