@@ -1,7 +1,7 @@
 {
  "id": "trixie-gateway",
  "name": "Trixie Gateway",
- "version": "0.3.0",
+ "version": "0.3.1",
  "python": {"min": "3.11", "requirements": ["requirements.txt"]},
  "entries": [
   {"name": "trixie-gateway", "script": "gateway.py"},
