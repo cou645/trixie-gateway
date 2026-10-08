@@ -4,7 +4,7 @@
 #   /root/pyqt6-venv/bin/pip install -r requirements.txt
 aiohttp==3.14.3
 aiortc==1.15.0
-av==17.1.0
+av==19.0.1
 # cryptography 49+ ships no macOS Intel wheel, so pip builds it from source
 # against a dynamic OpenSSL that PyInstaller then can't bundle correctly
 # ("Symbol not found: _SSL_get0_group_name"). 48.x has a universal2 wheel.
