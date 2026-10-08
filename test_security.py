@@ -108,8 +108,46 @@ def check_needs_root():
         os.geteuid = real
 
 
+def check_root_helper():
+    """G6: the root helper validates every argument and only serves its table."""
+    import asyncio
+    import root_helper as rh
+    bad = [("POST", "/yay/firewall/rule", {"chain": "-F", "target": "ACCEPT"}),
+           ("POST", "/yay/firewall/rule", {"chain": "INPUT", "target": "ACCEPT", "src": "1.2.3.4; id"}),
+           ("POST", "/yay/firewall/rule", {"chain": "INPUT", "target": "ACCEPT", "dport": "70000"}),
+           ("POST", "/yay/firewall/rule", {"chain": "INPUT", "target": "-j"}),
+           ("POST", "/yay/firewall/rule", {"chain": "INPUT", "target": "ACCEPT", "comment": "--x"}),
+           ("PUT", "/yay/firewall/policy", {"chain": "INPUT;", "policy": "DROP"}),
+           ("POST", "/yay/firewall/preset", {"name": "nope"}),
+           ("POST", "/yay/network/wifi/connect", {"ssid": 'a"b', "iface": "wlan0"}),
+           ("POST", "/yay/network/wifi/connect", {"ssid": "ok", "password": 'p"w', "iface": "wlan0"}),
+           ("PUT", "/yay/layers/../etc", {"active": True}),
+           ("PUT", "/yay/layers/no-such-layer-xyz", {"active": True})]
+    for method, path, body in bad:
+        status, out = asyncio.run(rh.dispatch(method, path, body, {}))
+        assert status in (400, 404), (path, body, status, out)
+    assert asyncio.run(rh.dispatch("POST", "/yay/terminal/exec", {"cmd": "id"}, {}))[0] == 404
+    if os.geteuid() != 0:
+        return
+    sock = os.path.join(tempfile.mkdtemp(), "h.sock")
+    proc = subprocess.Popen([sys.executable, "root_helper.py", "--user", "root", "--socket", sock],
+                            cwd=HERE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(40):
+            if os.path.exists(sock):
+                break
+            time.sleep(0.25)
+        assert oct(os.stat(sock).st_mode)[-3:] == "600"
+        assert asyncio.run(rh.call("GET", "/yay/firewall/presets", sock=sock))[0] == 200
+        assert asyncio.run(rh.call("POST", "/yay/firewall/rule", {"chain": "-F", "target": "ACCEPT"},
+                                   sock=sock))[0] == 400
+    finally:
+        proc.terminate()
+
+
 def main():
     check_needs_root()
+    check_root_helper()
     gw = Gateway({})                      # fresh install: no capabilities section
     try:
         evil = {"Origin": "https://evil.example"}

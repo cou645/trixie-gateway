@@ -50,6 +50,7 @@ import platforms
 from capability_broker import CapabilityBroker
 from semantic_journal import SemanticJournal
 import tls_cert
+import root_helper
 from providers.router import ProviderRouter
 from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules, app_updates
 
@@ -277,9 +278,18 @@ async def platform_guard_middleware(req: web.Request, handler):
     useful to whoever is holding the phone.
     """
     if _needs_root(req):
+        if root_helper.available():
+            # the root helper validates and runs just this action (G6)
+            body = await req.json() if req.can_read_body else {}
+            try:
+                status, out = await root_helper.call(req.method, req.path, body, dict(req.query))
+            except (OSError, ValueError) as e:
+                status, out = 503, {"ok": False, "error": f"root helper unavailable: {e}"}
+            return web.json_response(out, status=status)
         return web.json_response(
             {"ok": False, "error": "needs administrator rights: the gateway runs as a normal "
-             "user here (safer). Run it as root only if you need this feature."}, status=403)
+             "user here (safer). Install trixie-gateway-helper for firewall, Wi-Fi and "
+             "layer control, or run the gateway as root."}, status=403)
     for prefix, feature in _FEATURE_ROUTES.items():
         if req.path.startswith(prefix) and not platforms.supported(feature):
             return web.json_response(platforms.unsupported_result(feature), status=501)

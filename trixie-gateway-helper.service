@@ -1,0 +1,22 @@
+# Root helper for a gateway that runs as a normal user (recommended): only
+# firewall, Wi-Fi and layer actions, validated, for ONE account. See
+# root_helper.py. Replace YOURUSER and the path, then:
+#   sudo cp trixie-gateway-helper.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now trixie-gateway-helper
+[Unit]
+Description=trixie-gateway root helper (firewall, Wi-Fi, layers)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 /home/YOURUSER/trixie-gateway/root_helper.py --user YOURUSER
+Restart=on-failure
+RestartSec=3
+# no capabilities beyond what iptables/iwlist/wpa_cli/ip need
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
+NoNewPrivileges=true
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

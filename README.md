@@ -264,9 +264,11 @@ The gateway does not need root for screen sharing, mouse and keyboard,
 clipboard, audio, media or the terminal, and running it as your own account
 limits what a paired device can do to your own files. Install the user
 service: see the comments at the top of `trixie-gateway-user.service`.
-Firewall, Wi-Fi connect and layer switching need root and answer
-"needs administrator rights" otherwise; run the system service
-(`trixie-gateway.service`) as root only if you need them.
+Firewall, Wi-Fi and layer switching need root. For those, install the small
+root helper (`trixie-gateway-helper.service`, see `root_helper.py`): it runs as
+root, accepts connections only from the gateway's account, validates every
+argument and does nothing but those actions. Without it those features answer
+"needs administrator rights".
 
 Network access: the gateway answers only over Tailscale and from this PC.
 To allow your home network too, add `"network": {"allow_lan": true}` to

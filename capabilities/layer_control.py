@@ -77,6 +77,9 @@ def set_layer(sda2: Path, name: str, enable: bool) -> dict:
     if name in _LOCKED:
         raise ValueError(f"'{name}' is a core branch and cannot be toggled")
     wanted = _desired(sda2)
+    # only layers the app could have listed: live branches or pending ones
+    if name not in wanted and name not in {b["name"] for b in _live_branches()}:
+        raise ValueError(f"unknown layer: {name!r}")
     if enable:
         wanted.add(name)
     else:
