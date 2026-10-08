@@ -11,7 +11,7 @@ psutil>=5.9                             ; sys_platform != "linux"
 # Input, window control and screen capture use ctypes/user32 and ffmpeg
 # gdigrab, which are already present.
 pycaw>=20240210                         ; sys_platform == "win32"
-comtypes>=1.2                           ; sys_platform == "win32"
+comtypes>=1.4.17                           ; sys_platform == "win32"
 
 # macOS: Quartz supplies CGEvent (input) and the window list.
 pyobjc-framework-Quartz>=10.0           ; sys_platform == "darwin"
