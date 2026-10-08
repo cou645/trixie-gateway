@@ -31,10 +31,12 @@ Usage:
 import asyncio
 import json
 import logging
+import ipaddress
 import os
 import platform
 import re
 import signal
+import sys
 from pathlib import Path
 
 from aiohttp import web
@@ -84,6 +86,7 @@ ADMIN_HOME = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  table{border-collapse:collapse;width:100%%} th,td{border:1px solid #444;padding:5px 8px;text-align:left} th{background:#222}
  a{color:#7dd3fc} button{background:#2563eb;color:#fff;border:0;padding:7px 14px;border-radius:4px;font-size:1em;cursor:pointer}
  :focus-visible{outline:3px solid #facc15;outline-offset:2px} .muted{color:#aaa} code{background:#222;padding:1px 5px;border-radius:3px}
+ button.small{padding:3px 9px;font-size:.9em}
 </style></head><body>
 <h1>Gateway on %(host)s</h1>
 <p class="muted">This page only opens on this PC. Phones reach the gateway on port %(port)s over Tailscale.</p>
@@ -114,6 +117,36 @@ ADMIN_HOME = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   (if not: <code>systemctl restart tailscaled</code>).</p>
  </div>
 </div>
+<h2>Paired devices</h2>
+<p>The gateway runs as <b>%(account)s</b>. %(account_note)s</p>
+<p class="muted">Each phone or computer that paired. A device unused for 90 days must pair again.
+<b>Terminal</b> lets that device run commands on this PC as %(account)s; new devices start with it off.
+<b>Revoke</b> cuts a lost or sold device off at once.</p>
+<table><thead><tr><th>Device</th><th>Paired</th><th>Last used</th><th>Status</th><th>Terminal</th><th></th></tr></thead>
+<tbody id="toks"><tr><td colspan=6 class="muted">Loading…</td></tr></tbody></table>
+<script>
+async function tokAction(jti, change) {
+  await fetch('/admin/tokens', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(Object.assign({jti: jti}, change))});
+  loadToks();
+}
+async function loadToks() {
+  const d = await (await fetch('/admin/tokens')).json();
+  const day = t => t ? new Date(t * 1000).toLocaleDateString() : '';
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const rows = d.tokens.sort((a, b) => (b.last_used || 0) - (a.last_used || 0)).map(t => {
+    const idle = d.now - (t.last_used || 0) > d.idle_limit;
+    const st = t.revoked ? '<b style="color:#f87171">revoked</b>' : idle ? 'expired (unused 90 days)' : '<b style="color:#4ade80">active</b>';
+    const live = !t.revoked && !idle;
+    return '<tr><td>' + esc(t.sub) + '</td><td>' + day(t.issued) + '</td><td>' + day(t.last_used) + '</td><td>' + st + '</td>' +
+      '<td><label><input type="checkbox" ' + (t.terminal ? 'checked ' : '') + (live ? '' : 'disabled ') +
+      'onchange="tokAction(\'' + t.jti + '\', {terminal: this.checked})" aria-label="Terminal for ' + esc(t.sub) + '"> allowed</label></td>' +
+      '<td>' + (live ? '<button class="small" style="background:#b91c1c" onclick="if (confirm(\'Revoke ' + esc(t.sub) + '? It will have to pair again.\')) tokAction(\'' + t.jti + '\', {revoked: true})">Revoke</button>' : '') + '</td></tr>';
+  });
+  document.getElementById('toks').innerHTML = rows.join('') || '<tr><td colspan=6 class="muted">No device has paired yet.</td></tr>';
+}
+loadToks();
+</script>
 <h2>Devices</h2>
 <p class="muted">Every phone that has reached the gateway: on Tailscale by its Tailscale name (the MAC
 isn't visible across Tailscale), on the home network by its MAC. <b>Online</b> = seen in the last 2 minutes.</p>
@@ -164,7 +197,8 @@ document.getElementById('savedev').onclick = async () => {
 loadDevs(); setInterval(loadDevs, 5000);
 </script>
 <h2>Clipboard sharing</h2>
-<p>%(clips)s items in the shared history · %(named)s named devices · <a href="/admin/clipboard">who receives from whom →</a></p>
+<p>%(clips)s items in the shared history (unlocked items expire after %(expire)s h) · %(named)s named devices · <a href="/admin/clipboard">who receives from whom →</a>
+ <button class="small" onclick="if (confirm('Clear every unlocked item from the shared history?')) fetch('/admin/clipboard/clear', {method: 'POST'}).then(() => location.reload())">Clear history</button></p>
 <h2>App updates</h2>
 <table><thead><tr><th>App</th><th>Version</th><th>Published</th></tr></thead><tbody>%(apps)s</tbody></table>
 <p class="muted">Phones install these from TrXi-Ctrl → Updates. Publish a new build with
@@ -213,24 +247,18 @@ _FEATURE_ROUTES = {
 }
 
 
-@web.middleware
-async def tailscale_guard_middleware(req: web.Request, handler):
-    """Trust boundary is the tailnet, not per-route auth — every handler
-    here (terminal exec, desktop input, firewall control, ...) assumes
-    reaching this gateway at all already means you're a trusted tailnet
-    peer. But the TCP listener binds 0.0.0.0 (see start()), which is
-    reachable from any interface, not just tailscale0 — so that
-    assumption needs enforcing here. Same check already used correctly
-    in linux-system-tools/hashtext_server.py.
-    """
-    peer = req.remote
-    # The unix socket listener (local IPC, chmod 0660) has no peer IP at
-    # all — reaching it already implies local filesystem access, a
-    # stronger guarantee than any IP check, so it's trusted as-is.
-    if peer and not (peer.startswith("100.") or peer in ("127.0.0.1", "::1")):
-        return web.json_response(
-            {"error": "forbidden — tailscale only"}, status=403)
-    return await handler(req)
+# Linux routes that only work as root. Most users run the gateway as their
+# normal account (safer: a device's commands only reach that account), so
+# these answer a clear 403 instead of failing deep inside iptables/iwlist
+# (ISO 27001 gap G6).
+_ROOT_ROUTES = [(None, "/yay/firewall"), ("PUT", "/yay/layers/"), (None, "/yay/network/wifi")]
+
+
+def _needs_root(req: web.Request) -> bool:
+    if sys.platform != "linux" or os.geteuid() == 0:
+        return False
+    return any(req.path.startswith(prefix) and (method is None or req.method == method)
+               for method, prefix in _ROOT_ROUTES)
 
 
 @web.middleware
@@ -241,11 +269,17 @@ async def platform_guard_middleware(req: web.Request, handler):
     iptables/nmcli/aufs, producing a 500 and a stack trace that says nothing
     useful to whoever is holding the phone.
     """
+    if _needs_root(req):
+        return web.json_response(
+            {"ok": False, "error": "needs administrator rights: the gateway runs as a normal "
+             "user here (safer). Run it as root only if you need this feature."}, status=403)
     for prefix, feature in _FEATURE_ROUTES.items():
         if req.path.startswith(prefix) and not platforms.supported(feature):
             return web.json_response(platforms.unsupported_result(feature), status=501)
     return await handler(req)
 
+
+_TS_NET6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")   # Tailscale IPv6
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
 
@@ -273,9 +307,12 @@ class TrixieGateway:
         self._pairing_code    = None
         self._pairing_expires = 0.0
         self._pairing_used    = True
+        self._pair_failures: list[float] = []   # wrong codes in the last minute
+        self._refused_at: dict = {}             # (ip, path) -> last journal time
         # Shared clipboard history (capabilities/clipboard.History): every
         # device's pushes and the PC's own copies, newest first
-        self._clip = clipboard.History()
+        self._clip = clipboard.History(max_age=int(
+            self.config.get("clipboard", {}).get("expire_hours", 24) * 3600))
         self._rules = clip_rules.Rules()   # who receives whose shares
         self._pc_seen = None          # last PC clipboard text looked at
         self.journal = SemanticJournal(self.config.get("journal", {}))
@@ -310,37 +347,82 @@ class TrixieGateway:
     def _build_app(self) -> web.Application:
         @web.middleware
         async def auth_middleware(req: web.Request, handler):
-            if req.remote and clip_rules.is_local(req.remote) and _browser_foreign(req):
-                return web.json_response(
-                    {"error": "cross-site request refused"}, status=403)
-            if not clip_rules.is_local(req.remote):   # device list + whitelist
-                tok = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-                name = (tok and self.broker.subject(tok)) or "unknown"
-                if not self._rules.admit(req.remote, name):
-                    return web.json_response(
-                        {"error": "this device is not on the gateway's whitelist "
-                                  "(allow it on the PC: /admin)"}, status=403)
-            if req.path.startswith("/dl/"):         # app share links: the token
-                return await handler(req)           # in the URL is the key
-            if req.path == "/admin" or req.path.startswith("/admin/"):  # this PC only
-                if not clip_rules.is_local(req.remote):
-                    return web.json_response({"error": "admin pages are local only"}, status=403)
-                return await handler(req)
-            if (req.method, req.path) in _PUBLIC_ROUTES or not req.remote:
-                return await handler(req)
-            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-            # allow_unauthenticated (testing) never reaches beyond this PC
-            if not (token or clip_rules.is_local(req.remote)) or \
-                    not self.broker.validate(token, scope="device"):
-                return web.json_response(
-                    {"error": "missing or invalid capability token — pair via /yay/pair"},
-                    status=401)
-            req["device"] = self.broker.subject(token)
+            resp = await self._authorise(req)
+            if resp is not None:
+                self._log_refusal(req, resp.status)
+                return resp
             return await handler(req)
 
         app = web.Application(middlewares=[auth_middleware,
                                            platform_guard_middleware,
                                            normalize_path_middleware()])
+        self._routes(app)
+        return app
+
+    def _network_allowed(self, ip: str) -> bool:
+        """Tailscale, this PC, and -- only with network.allow_lan -- private LAN
+        addresses. The listener binds 0.0.0.0, so without this a gateway on a
+        cafe's Wi-Fi answered everyone there (ISO 27001 gap G3)."""
+        if not ip or clip_rules.is_local(ip):
+            return True
+        try:
+            addr = ipaddress.ip_address(ip.split("%")[0])
+        except ValueError:
+            return False
+        if addr in clip_rules._TS_NET or (addr.version == 6 and addr in _TS_NET6):
+            return True
+        allow_lan = self.config.get("network", {}).get("allow_lan", False)
+        return bool(allow_lan and (addr.is_private or addr.is_link_local))
+
+    def _log_refusal(self, req: web.Request, status: int):
+        """Refused requests go in the journal, once a minute per address+path."""
+        key, now = (req.remote, req.path), time.time()
+        if now - self._refused_at.get(key, 0) < 60:
+            return
+        self._refused_at[key] = now
+        if len(self._refused_at) > 1000:
+            self._refused_at.clear()
+        self.journal.append("auth_refused", req.path,
+                            {"remote": req.remote, "status": status, "method": req.method})
+
+    async def _authorise(self, req: web.Request):
+        """None = let it through, else the refusal response."""
+        if not self._network_allowed(req.remote):
+            return web.json_response(
+                {"error": "this gateway only answers over Tailscale "
+                          "(LAN access: network.allow_lan in config.json)"}, status=403)
+        if req.remote and clip_rules.is_local(req.remote) and _browser_foreign(req):
+            return web.json_response(
+                {"error": "cross-site request refused"}, status=403)
+        if not clip_rules.is_local(req.remote):   # device list + whitelist
+            tok = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            name = (tok and self.broker.subject(tok)) or "unknown"
+            # pairing and the health ping stay open: the one-time code shown
+            # on this PC is the owner's consent, and pairing adds the device
+            if not self._rules.admit(req.remote, name) and \
+                    (req.method, req.path) not in _PUBLIC_ROUTES:
+                return web.json_response(
+                    {"error": "this device is not on the gateway's whitelist "
+                              "(allow it on the PC: /admin)"}, status=403)
+        if req.path.startswith("/dl/"):         # app share links: the token
+            return None                         # in the URL is the key
+        if req.path == "/admin" or req.path.startswith("/admin/"):  # this PC only
+            if not clip_rules.is_local(req.remote):
+                return web.json_response({"error": "admin pages are local only"}, status=403)
+            return None
+        if (req.method, req.path) in _PUBLIC_ROUTES or not req.remote:
+            return None
+        token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        # allow_unauthenticated (testing) never reaches beyond this PC
+        if not (token or clip_rules.is_local(req.remote)) or \
+                not self.broker.validate(token, scope="device"):
+            return web.json_response(
+                {"error": "missing, revoked or expired device token — pair again via the QR"},
+                status=401)
+        req["device"] = self.broker.subject(token)
+        return None
+
+    def _routes(self, app: web.Application):
         # OpenAI-compatible
         app.router.add_post("/v1/chat/completions", self._chat_completions)
         app.router.add_get( "/v1/models",           self._list_models)
@@ -437,6 +519,9 @@ class TrixieGateway:
         app.router.add_get( "/admin/config",                self._clip_admin_get)
         app.router.add_get( "/admin/devices",               self._devices_get)
         app.router.add_post("/admin/devices",               self._devices_set)
+        app.router.add_post("/admin/clipboard/clear",       self._clip_clear)
+        app.router.add_get( "/admin/tokens",                self._tokens_get)
+        app.router.add_post("/admin/tokens",                self._tokens_set)
         app.router.add_post("/admin/config",                self._clip_admin_set)
         # Firewall
         app.router.add_get( "/yay/firewall/rules",          self._fw_rules)
@@ -635,12 +720,15 @@ class TrixieGateway:
     # ── Capability tokens ────────────────────────────────────────────────────
 
     async def _issue_capability(self, req: web.Request) -> web.Response:
+        # Renewal only: same device, same scope and permissions, never more.
+        # It used to mint any scope/subject/lifetime for any paired device,
+        # which let a device keep spare tokens past being revoked.
         body = await req.json()
-        token = self.broker.issue(
-            scope=body.get("scope", "chat"),
-            ttl_seconds=body.get("ttl", 3600),
-            subject=body.get("subject", "unknown"),
-        )
+        old = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        ttl = max(60, min(int(body.get("ttl", 3600)), 10 * 365 * 24 * 3600))
+        token = self.broker.renew(old, ttl)
+        if not token:
+            return web.json_response({"error": "renewal needs a valid device token"}, status=403)
         return web.json_response({"token": token})
 
     async def _get_providers(self, req: web.Request) -> web.Response:
@@ -701,17 +789,33 @@ class TrixieGateway:
     async def _pair_device(self, req: web.Request) -> web.Response:
         body = await req.json()
         code = str(body.get("pairing_code", ""))
+        now = time.time()
+        self._pair_failures = [t for t in self._pair_failures if now - t < 60]
+        if len(self._pair_failures) >= 5:          # G9: slow down guessing
+            return web.json_response(
+                {"error": "too many wrong pairing codes; wait a minute"}, status=429)
         valid = (not self._pairing_used and self._pairing_code is not None
-                 and time.time() < self._pairing_expires
+                 and now < self._pairing_expires
                  and hmac.compare_digest(code, self._pairing_code))
         if not valid:
+            self._pair_failures.append(now)
+            self.journal.append("pair_failed", req.remote or "local")
             return web.json_response(
                 {"error": "invalid, expired, or already-used pairing code"}, status=403)
         self._pairing_used = True
         device_name = str(body.get("device_name", "unknown"))[:64]
         token = self.broker.issue(scope="admin", ttl_seconds=10 * 365 * 24 * 3600,
                                   subject=device_name)
-        self.journal.append("device_paired", device_name)
+        # G3: from the first pairing on, only listed devices get in. Devices
+        # that already paired (seen with a name) stay allowed.
+        if not self._rules.whitelist:
+            keep = [k for k, v in self._rules.seen.items() if v.get("name", "unknown") != "unknown"]
+            new = clip_rules.keys_for(req.remote, device_name)[:1]
+            self._rules.set_whitelist(True, keep + new)
+            self.journal.append("whitelist_change", "on", {"allow": keep + new})
+        else:
+            self._rules.set_whitelist(True, self._rules.allow + clip_rules.keys_for(req.remote, device_name)[:1])
+        self.journal.append("device_paired", device_name, {"remote": req.remote})
         LOG.info("paired device %r", device_name)
         return web.json_response({"token": token, "device_name": device_name})
 
@@ -1117,7 +1221,15 @@ class TrixieGateway:
             "<tr><td colspan=3>None published yet.</td></tr>"
         clips = len(self._clip.items)
         named = len(self._rules.devices)
+        import getpass
+        account = getpass.getuser()
+        note = ("Any device with Terminal allowed can do anything on this PC. Run the "
+                "gateway as your normal user unless you need firewall or network control."
+                if account in ("root", "Administrator", "SYSTEM") else
+                "Root-only features (firewall, network settings) need an administrator.")
         page = ADMIN_HOME % {"apps": apps, "clips": clips, "named": named,
+                             "account": _h.escape(account), "account_note": note,
+                             "expire": round(self._clip.max_age / 3600) if self._clip.max_age else "never",
                              "port": self.port, "host": _h.escape(platform.node())}
         return web.Response(text=page, content_type="text/html")
 
@@ -1133,9 +1245,29 @@ class TrixieGateway:
             "whitelist": r.whitelist, "allow": r.allow, "now": time.time(),
             "seen": [dict(v, key=k, label=r.label_of_key(k)) for k, v in r.seen.items()]})
 
+    async def _clip_clear(self, req: web.Request) -> web.Response:
+        n = self._clip.clear()
+        self.journal.append("clipboard_clear", str(n))
+        return web.json_response({"ok": True, "removed": n})
+
+    async def _tokens_get(self, req: web.Request) -> web.Response:
+        return web.json_response({"now": time.time(), "idle_limit": self.broker.IDLE_LIMIT,
+                                  "tokens": self.broker.tokens()})
+
+    async def _tokens_set(self, req: web.Request) -> web.Response:
+        body = await req.json()
+        jti = str(body.get("jti", ""))
+        ok = self.broker.set_token(jti, revoked=body.get("revoked"), terminal=body.get("terminal"))
+        if ok:
+            self.journal.append("device_revoked" if body.get("revoked") else "terminal_permission",
+                                jti, {k: body[k] for k in ("revoked", "terminal") if k in body})
+        return web.json_response({"ok": ok}, status=200 if ok else 404)
+
     async def _devices_set(self, req: web.Request) -> web.Response:
         body = await req.json()
         self._rules.set_whitelist(body.get("whitelist"), body.get("allow") or [])
+        self.journal.append("whitelist_change", "on" if body.get("whitelist") else "off",
+                            {"allow": self._rules.allow})
         return web.json_response({"ok": True})
 
     async def _clip_admin_set(self, req: web.Request) -> web.Response:
@@ -1169,6 +1301,7 @@ class TrixieGateway:
             await asyncio.sleep(2)
 
     async def _clipboard_get(self, req: web.Request) -> web.Response:
+        self._clip.prune()
         me = self._clip_device(req)
         return web.json_response({"ok": True, "me": me,
                                   "entries": self._rules.visible(
@@ -1493,6 +1626,13 @@ class TrixieGateway:
         timeout = int(body.get("timeout", 30))
         if not cmd:
             return web.json_response({"ok": False, "error": "cmd required"}, status=400)
+        tok = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        if req.remote and not self.broker.can_terminal(tok):
+            # 200 so every app version shows the reason in the terminal
+            return web.json_response({
+                "ok": False, "returncode": -1, "stdout": "",
+                "stderr": "The terminal is off for this device. Turn it on for this device "
+                          "on the PC: http://localhost:8772/admin (Paired devices)."})
         why = terminal.dangers(cmd)
         if why and not body.get("confirm"):
             # 200 so older app builds show the stderr text instead of failing
@@ -1501,8 +1641,10 @@ class TrixieGateway:
                 "stdout": "", "stderr": "Not run: this command " + "; ".join(why) +
                 ". Confirm it in an up-to-date TrXi-Ctrl to run it anyway."})
         result = await terminal.exec_cmd(cmd, cwd=cwd, timeout=timeout)
-        self.journal.append("terminal_exec", cmd[:80],
-                            {"confirmed_dangerous": why} if why else None)
+        self.journal.append("terminal_exec", cmd[:4000],
+                            {"device": req.get("device"), "remote": req.remote,
+                             "returncode": result.get("returncode"),
+                             **({"confirmed_dangerous": why} if why else {})})
         return web.json_response(result)
 
     # ── Run ──────────────────────────────────────────────────────────────────

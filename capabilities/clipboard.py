@@ -91,8 +91,10 @@ MAX_ITEMS = 50
 
 
 class History:
-    def __init__(self, path=HISTORY, max_items=MAX_ITEMS):
-        self.path, self.max_items = path, max_items
+    def __init__(self, path=HISTORY, max_items=MAX_ITEMS, max_age=24 * 3600):
+        # max_age: unlocked items expire (copied passwords shouldn't sit here
+        # for ever -- ISO 27001 gap G8); 0 keeps them until pushed out
+        self.path, self.max_items, self.max_age = path, max_items, max_age
         try:
             with open(path, encoding="utf-8") as f:
                 self.items = [i for i in json.load(f) if i.get("text")]
@@ -106,6 +108,25 @@ class History:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(self.items, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
+
+    def prune(self):
+        """Drop unlocked items older than max_age; True if any went."""
+        if not self.max_age:
+            return False
+        cutoff = time.time() - self.max_age
+        keep = [i for i in self.items if i.get("locked") or i.get("ts", 0) >= cutoff]
+        if len(keep) == len(self.items):
+            return False
+        self.items = keep
+        self._save()
+        return True
+
+    def clear(self):
+        """Remove every unlocked item; returns how many went."""
+        n = len(self.items)
+        self.items = [i for i in self.items if i.get("locked")]
+        self._save()
+        return n - len(self.items)
 
     def latest_text(self):
         return self.items[0]["text"] if self.items else None
@@ -122,6 +143,7 @@ class History:
         if to:                        # only these devices / @groups
             item["to"] = list(to)
         self.items.insert(0, item)
+        self.prune()
         unlocked = [i for i in self.items if not i.get("locked")]
         for extra in unlocked[self.max_items:]:
             self.items.remove(extra)

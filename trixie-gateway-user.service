@@ -1,0 +1,26 @@
+# Run the gateway as YOUR account (recommended): a paired device's commands
+# then reach only your files, not the whole system. Root-only features
+# (firewall, Wi-Fi connect, layers) answer "needs administrator rights".
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp trixie-gateway-user.service ~/.config/systemd/user/trixie-gateway.service
+#   # edit ExecStart if the gateway isn't in ~/trixie-gateway
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now trixie-gateway
+#   journalctl --user -u trixie-gateway -f
+#
+# A user service starts with your desktop session, so DISPLAY/WAYLAND_DISPLAY
+# and your sound server are already there -- no XAUTHORITY workaround.
+[Unit]
+Description=trixie-gateway (runs as you)
+After=graphical-session.target
+
+[Service]
+Type=simple
+# standalone binary:  ExecStart=%h/trixie-gateway/trixie-gateway --port 8772 --socket %t/trixie-gateway.sock
+ExecStart=/usr/bin/env python3 %h/trixie-gateway/gateway.py --port 8772 --socket %t/trixie-gateway.sock
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

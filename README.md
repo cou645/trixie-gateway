@@ -258,6 +258,20 @@ recurring with `/etc/NetworkManager/conf.d/99-tailscale-unmanaged.conf`:
 
 then `nmcli general reload conf`.
 
+## Run it as your normal user (recommended)
+
+The gateway does not need root for screen sharing, mouse and keyboard,
+clipboard, audio, media or the terminal, and running it as your own account
+limits what a paired device can do to your own files. Install the user
+service: see the comments at the top of `trixie-gateway-user.service`.
+Firewall, Wi-Fi connect and layer switching need root and answer
+"needs administrator rights" otherwise; run the system service
+(`trixie-gateway.service`) as root only if you need them.
+
+Network access: the gateway answers only over Tailscale and from this PC.
+To allow your home network too, add `"network": {"allow_lan": true}` to
+`config.json` (traffic on a LAN is not encrypted; Tailscale is).
+
 ## Editions
 
 Free and Pro are the same code. Pro builds add the licence-check files
