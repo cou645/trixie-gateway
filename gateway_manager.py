@@ -17,7 +17,12 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout,
                                QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
                                QWidget)
 
+import os as _os
 UNIT = "trixie-gateway.service"
+# chameleon-install sets the gateway up as a per-user service (recommended);
+# older setups use a system service. Control whichever is installed.
+_USER_UNIT = _os.path.expanduser("~/.config/systemd/user/" + UNIT)
+SCOPE = ["--user"] if _os.path.exists(_USER_UNIT) else []
 BASE = "http://127.0.0.1:8772"
 
 
@@ -75,7 +80,7 @@ class Manager(QWidget):
         self.load_qr()
 
     def ctl(self, action):
-        rc, out = sh("systemctl", action, UNIT)
+        rc, out = sh("systemctl", *SCOPE, action, UNIT)
         if rc:
             self.status.setText(f"systemctl {action} failed: {out}")
         self.refresh()
@@ -83,8 +88,9 @@ class Manager(QWidget):
             QTimer.singleShot(2500, self.load_qr)  # give aiohttp time to bind
 
     def refresh(self):
-        self.status.setText(f"{UNIT}: <b>{sh('systemctl', 'is-active', UNIT)[1]}</b>")
-        self.log.setPlainText(sh("journalctl", "-u", UNIT, "-n", "200",
+        where = "your user" if SCOPE else "system"
+        self.status.setText(f"{UNIT} ({where}): <b>{sh('systemctl', *SCOPE, 'is-active', UNIT)[1]}</b>")
+        self.log.setPlainText(sh("journalctl", *SCOPE, "-u", UNIT, "-n", "200",
                                  "--no-pager", "-o", "short-iso")[1])
         self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
 
