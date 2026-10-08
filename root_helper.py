@@ -18,7 +18,6 @@ import ipaddress
 import json
 import logging
 import os
-import pwd
 import re
 import socket
 import struct
@@ -226,6 +225,7 @@ def make_handler(allowed_uid: int):
 
 
 async def serve(user: str, path: str = SOCKET):
+    import pwd                                     # Unix only; the client side runs everywhere
     uid = pwd.getpwnam(user).pw_uid
     if os.path.exists(path):
         os.unlink(path)
