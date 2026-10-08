@@ -162,7 +162,18 @@ def main():
     gw = Gateway({"network": {"allow_lan": True}})
     try:
         if lan:
-            assert gw.get("/yay/health", host=lan)[0] == 200
+            # G5: home network only over HTTPS, with the pinned certificate
+            assert gw.get("/yay/health", host=lan)[0] == 403
+            import ssl, hashlib, http.client
+            fp = gw.read("/yay/health")["tls_sha256"]
+            ctx = ssl.create_default_context()
+            ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+            c = http.client.HTTPSConnection(lan, gw.port + 1, context=ctx, timeout=10)
+            c.request("GET", "/yay/health")
+            assert c.getresponse().status == 200
+            der = c.sock.getpeercert(binary_form=True)
+            assert hashlib.sha256(der).hexdigest() == fp and len(fp) == 64, fp
+            c.close()
         code = gw.read("/yay/pair/start")["pairing_code"]
         st, r = gw.call("/yay/pair", {"pairing_code": code, "device_name": "TestPhone"},
                         host=ts or "127.0.0.1")

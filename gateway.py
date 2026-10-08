@@ -49,6 +49,7 @@ import time
 import platforms
 from capability_broker import CapabilityBroker
 from semantic_journal import SemanticJournal
+import tls_cert
 from providers.router import ProviderRouter
 from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules, app_updates
 
@@ -101,6 +102,8 @@ ADMIN_HOME = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   </ol>
   <p>No camera (Windows/Linux app)? In <b>Settings</b> enter the gateway address and this code:</p>
   <p role="status" aria-live="polite" style="font-size:1.3em"><code id="paircode">…</code> &nbsp;<span id="gwurl" class="muted"></span></p>
+  <p class="muted">On a home network the apps connect with HTTPS to port %(tlsport)s and check this certificate fingerprint; the
+  app's Settings shows the one it saw, and they must match: <code style="word-break:break-all">%(fp)s</code></p>
   <p class="muted">The code works once and expires after 10 minutes.</p>
   <button onclick="loadQr()">New code</button>
   <script>
@@ -311,6 +314,11 @@ class TrixieGateway:
         self._pairing_code    = None
         self._pairing_expires = 0.0
         self._pairing_used    = True
+        try:
+            self.tls_fp = tls_cert.fingerprint(tls_cert.ensure()[0])
+        except Exception as e:                       # never block start-up on it
+            LOG.warning("tls certificate unavailable: %s", e)
+            self.tls_fp = ""
         self._pair_failures: list[float] = []   # wrong codes in the last minute
         self._refused_at: dict = {}             # (ip, path) -> last journal time
         # Shared clipboard history (capabilities/clipboard.History): every
@@ -378,6 +386,18 @@ class TrixieGateway:
         allow_lan = self.config.get("network", {}).get("allow_lan", False)
         return bool(allow_lan and (addr.is_private or addr.is_link_local))
 
+    def _lan_plaintext(self, req: web.Request) -> bool:
+        """A home-network request over plain HTTP: refused, because only
+        Tailscale encrypts by itself (G5). LAN clients use HTTPS on port+1."""
+        ip = req.remote
+        if not ip or clip_rules.is_local(ip) or req.secure:
+            return False
+        try:
+            addr = ipaddress.ip_address(ip.split("%")[0])
+        except ValueError:
+            return True
+        return not (addr in clip_rules._TS_NET or (addr.version == 6 and addr in _TS_NET6))
+
     def _log_refusal(self, req: web.Request, status: int):
         """Refused requests go in the journal, once a minute per address+path."""
         key, now = (req.remote, req.path), time.time()
@@ -395,6 +415,10 @@ class TrixieGateway:
             return web.json_response(
                 {"error": "this gateway only answers over Tailscale "
                           "(LAN access: network.allow_lan in config.json)"}, status=403)
+        if self._lan_plaintext(req):
+            return web.json_response(
+                {"error": f"home-network connections must use https on port {self.port + 1}"},
+                status=403)
         if req.remote and clip_rules.is_local(req.remote) and _browser_foreign(req):
             return web.json_response(
                 {"error": "cross-site request refused"}, status=403)
@@ -699,6 +723,8 @@ class TrixieGateway:
     async def _health(self, req: web.Request) -> web.Response:
         return web.json_response({
             "status":         "ok",
+            "tls_port":       self.port + 1,      # home-network HTTPS (G5)
+            "tls_sha256":     self.tls_fp,
             "hostname":       platform.node(),
             "providers":      self.router.status(),
             "journal_events": self.journal.count(),
@@ -912,7 +938,7 @@ class TrixieGateway:
                 {"error": "tailscale IP not available — is tailscale up?"}, status=503)
         url = f"http://{ip}:{self.port}"
         code = self._new_pairing_code()
-        payload = json.dumps({"url": url, "pair": code})
+        payload = json.dumps({"url": url, "pair": code, "fp": self.tls_fp})
         try:
             proc = await asyncio.create_subprocess_exec(
                 "qrencode", "-o", "-", "-t", "PNG", "-s", "8", payload,
@@ -926,7 +952,8 @@ class TrixieGateway:
                 {"error": (err or b"qrencode failed").decode(errors="replace")}, status=500)
         # the code as text too: desktop apps without a camera type it in
         return web.Response(body=png, content_type="image/png",
-                            headers={"X-Gateway-URL": url, "X-Pairing-Code": code})
+                            headers={"X-Gateway-URL": url, "X-Pairing-Code": code,
+                                     "X-Cert-SHA256": self.tls_fp})
 
     async def _wifi_scan(self, req: web.Request) -> web.Response:
         iface = req.rel_url.query.get("iface", self.wifi_iface)
@@ -1233,6 +1260,8 @@ class TrixieGateway:
                 "Root-only features (firewall, network settings) need an administrator.")
         page = ADMIN_HOME % {"apps": apps, "clips": clips, "named": named,
                              "account": _h.escape(account), "account_note": note,
+                             "tlsport": self.port + 1,
+                             "fp": " ".join(self.tls_fp[i:i + 4] for i in range(0, len(self.tls_fp), 4)),
                              "expire": round(self._clip.max_age / 3600) if self._clip.max_age else "never",
                              "port": self.port, "host": _h.escape(platform.node())}
         return web.Response(text=page, content_type="text/html")
@@ -1675,6 +1704,15 @@ class TrixieGateway:
             await tcp.start()
             LOG.info("listening on http://0.0.0.0:%d", port)
             sites.append(tcp)
+            # HTTPS for home-network clients (G5); fingerprint pinned by the apps
+            try:
+                ctx, _ = tls_cert.server_context()
+                tls = web.TCPSite(runner, "0.0.0.0", port + 1, ssl_context=ctx)
+                await tls.start()
+                LOG.info("listening on https://0.0.0.0:%d (cert sha256 %s)", port + 1, self.tls_fp)
+                sites.append(tls)
+            except OSError as e:
+                LOG.warning("https listener failed: %s", e)
 
         if not sites:
             raise RuntimeError("no listener started")
