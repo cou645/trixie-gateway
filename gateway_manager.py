@@ -1,9 +1,9 @@
-#!/root/pyside6-venv/bin/python3
+#!/usr/bin/env python3
 """Desktop control panel for the gateway service: start / stop / restart,
 show the phone pairing QR (from /yay/network/gateway_qr, loopback-only) and
 tail its log. Free and Pro are one codebase and one service since the merge.
 
-  /root/pyside6-venv/bin/python3 gateway_manager.py
+  python3 gateway_manager.py      (the gateway's own Python environment, with PySide6)
 """
 import subprocess
 import sys

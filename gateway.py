@@ -1,4 +1,4 @@
-#!/root/pyside6-venv/bin/python3
+#!/usr/bin/env python3
 # Copyright (C) 2026 Marcos M Contant aka stemsee <cou645@gmail.com>
 # Licensed under the PolyForm Strict License 1.0.0
 # (https://polyformproject.org/licenses/strict/1.0.0/): free for personal,
@@ -737,8 +737,7 @@ class TrixieGateway:
             "tls_sha256":     self.tls_fp,
             "hostname":       platform.node(),
             "providers":      self.router.status(),
-            "journal_events": self.journal.count(),
-            "sda2":           str(self.sda2),
+            # (public, no login: no paths or counts here)
             # Kept for older app builds that read it; "os"/"features" below are
             # what a cross-platform client should look at.
             "platform":       "debian-trixie",

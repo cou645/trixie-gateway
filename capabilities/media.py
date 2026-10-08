@@ -23,7 +23,8 @@ from pathlib import Path
 
 from . import mpv_ipc
 
-_MEDIA_DIR = Path("/mnt/sda2/YaYOS/layers/base/root/media")
+_MEDIA_DIR = Path(os.environ.get("TRIXIE_MEDIA_DIR",
+                                 "/mnt/sda2/YaYOS/layers/base/root/media"))
 if not _MEDIA_DIR.is_dir():
     # Union-fs stacking fallback: Fatdog64-derived distros (this box
     # included) mount under /aufs, standard Puppy Linux under /initrd —

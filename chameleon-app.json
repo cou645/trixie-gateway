@@ -1,0 +1,23 @@
+{
+ "id": "trixie-gateway",
+ "name": "Trixie Gateway",
+ "version": "0.3.0",
+ "python": {"min": "3.11", "requirements": ["requirements.txt"]},
+ "entries": [
+  {"name": "trixie-gateway", "script": "gateway.py"},
+  {"name": "trixie-gateway-helper", "script": "root_helper.py"},
+  {"name": "trixie-gateway-manager", "script": "gateway_manager.py", "pip": ["PySide6==6.11.2"],
+   "desktop": {"name": "Gateway Manager", "comment": "Start/stop the gateway and show the pairing QR",
+               "icon": "network-server", "categories": "System;Network;"}}
+ ],
+ "services": [
+  {"name": "trixie-gateway", "scope": "user", "after": "graphical-session.target",
+   "description": "Trixie Gateway (runs as you)",
+   "exec": "{bin}/trixie-gateway --port 8772 --socket %t/trixie-gateway.sock"},
+  {"name": "trixie-gateway-helper", "scope": "system", "optional": true, "after": "network.target",
+   "description": "Trixie Gateway root helper (firewall, Wi-Fi, layers) for {user}",
+   "exec": "{bin}/trixie-gateway-helper --user {user}",
+   "extra": ["NoNewPrivileges=true", "PrivateTmp=true",
+             "CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER"]}
+ ]
+}
