@@ -24,7 +24,7 @@ PyJWT[crypto]==2.13.0
 # ext-image-capture-source-v1 / wlr-foreign-toplevel-management-unstable-v1
 # (confirmed present on mango; not part of core wlroots so not guaranteed
 # on every compositor). numpy isn't imported directly but pulled in by av.
-pywayland==0.4.19
+pywayland==0.4.19 ; sys_platform == "linux"
 evdev==2.0.0 ; sys_platform == "linux"
 # Multi-phone cursor markers on the shared video feed (webrtc_screen.py's
 # _draw_peer_cursors) -- already an av/aiortc transitive dep, pinned here

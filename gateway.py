@@ -596,7 +596,7 @@ class TrixieGateway:
             "sda2":           str(self.sda2),
             "data_uuid":      DATA_UUID,
             "journal_events": self.journal.count(),
-            "gateway_version": "0.1.0-trixie",
+            "gateway_version": "0.3.0",
             "platform":        "debian-trixie",
             "display":         "x11",
             "init":            "systemd",
