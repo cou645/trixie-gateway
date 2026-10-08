@@ -1,30 +1,32 @@
+# trixie-gateway runtime deps -- exact versions that were tested (ISO 27001 G10);
+# Dependabot proposes updates weekly (.github/dependabot.yml).
 # trixie-gateway runtime deps — install into /root/pyqt6-venv
 #   /root/pyqt6-venv/bin/pip install -r requirements.txt
-aiohttp>=3.9
-aiortc>=1.14
-av>=13
+aiohttp==3.14.3
+aiortc==1.15.0
+av==17.1.0
 # cryptography 49+ ships no macOS Intel wheel, so pip builds it from source
 # against a dynamic OpenSSL that PyInstaller then can't bundle correctly
 # ("Symbol not found: _SSL_get0_group_name"). 48.x has a universal2 wheel.
-cryptography>=42 ; sys_platform != "darwin" or platform_machine != "x86_64"
-cryptography>=42,<49 ; sys_platform == "darwin" and platform_machine == "x86_64"
-pylibsrtp>=0.10
-aioice>=0.9
-dnspython>=2.6
-ifaddr>=0.2
-pyee>=12
+cryptography==50.0.1 ; sys_platform != "darwin" or platform_machine != "x86_64"
+cryptography==48.0.1 ; sys_platform == "darwin" and platform_machine == "x86_64"
+pylibsrtp==1.0.0
+aioice==0.10.2
+dnspython==2.8.0
+ifaddr==0.2.0
+pyee==14.0.0
 # Pro edition only (license_client.py from the private repo); harmless otherwise
-requests>=2.31
-PyJWT[crypto]>=2.8
+requests==2.34.2
+PyJWT[crypto]==2.13.0
 # Wayland/wlroots backend (platforms/linux_wayland*.py) -- only loaded when
 # platforms.LINUX_SESSION == "wayland". Also needs /dev/uinput read/write
 # access, and a compositor that implements ext-image-copy-capture-v1 /
 # ext-image-capture-source-v1 / wlr-foreign-toplevel-management-unstable-v1
 # (confirmed present on mango; not part of core wlroots so not guaranteed
 # on every compositor). numpy isn't imported directly but pulled in by av.
-pywayland>=0.4
-evdev>=1.6 ; sys_platform == "linux"
+pywayland==0.4.19
+evdev==2.0.0 ; sys_platform == "linux"
 # Multi-phone cursor markers on the shared video feed (webrtc_screen.py's
 # _draw_peer_cursors) -- already an av/aiortc transitive dep, pinned here
 # since it's now imported directly rather than incidentally present.
-Pillow>=10
+Pillow==12.3.0

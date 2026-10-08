@@ -1,0 +1,30 @@
+name: Security tests
+
+# Runs the gateway's security regression tests and self-tests on every push
+# (ISO 27001 gap G12). They start throwaway gateways on spare ports.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y xdotool
+          python -m pip install -r requirements.txt
+      - name: Self-tests
+        run: |
+          python capability_broker.py
+          python semantic_journal.py
+          PYTHONPATH=. python capabilities/terminal.py
+          PYTHONPATH=. python capabilities/clip_rules.py
+      - name: Security regression tests
+        run: python test_security.py
