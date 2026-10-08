@@ -56,7 +56,10 @@ jobs:
         run: |
           BIN=dist/trixie-gateway
           [ -d dist/TrixieGateway.app ] && BIN=dist/TrixieGateway.app/Contents/MacOS/trixie-gateway
-          "$BIN" --port 8899 &
+          # authentication is on by default since v0.3.0; this test config only
+          # relaxes it for requests from this machine
+          echo '{"capabilities":{"allow_unauthenticated":true}}' > smoke.json
+          "$BIN" --port 8899 --config smoke.json &
           for i in $(seq 1 20); do
             sleep 1
             curl -sf http://127.0.0.1:8899/yay/health && break
@@ -70,7 +73,8 @@ jobs:
         run: |
           # stdout/stderr go to files so a crash on startup is diagnosable
           # instead of just "did not answer".
-          $p = Start-Process -FilePath dist\trixie-gateway.exe -ArgumentList "--port","8899" -PassThru `
+          '{"capabilities":{"allow_unauthenticated":true}}' | Set-Content smoke.json
+          $p = Start-Process -FilePath dist\trixie-gateway.exe -ArgumentList "--port","8899","--config","smoke.json" -PassThru `
                  -RedirectStandardOutput gw.out.log -RedirectStandardError gw.err.log
           $ok = $false
           foreach ($i in 1..60) {
