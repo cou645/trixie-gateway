@@ -15,4 +15,4 @@ comtypes>=1.2                           ; sys_platform == "win32"
 
 # macOS: Quartz supplies CGEvent (input) and the window list.
 pyobjc-framework-Quartz>=10.0           ; sys_platform == "darwin"
-pyobjc-framework-Cocoa>=10.0            ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=12.2.2            ; sys_platform == "darwin"
