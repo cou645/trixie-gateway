@@ -139,11 +139,15 @@ async function loadToks() {
     const st = t.revoked ? '<b style="color:#f87171">revoked</b>' : idle ? 'expired (unused 90 days)' : '<b style="color:#4ade80">active</b>';
     const live = !t.revoked && !idle;
     return '<tr><td>' + esc(t.sub) + '</td><td>' + day(t.issued) + '</td><td>' + day(t.last_used) + '</td><td>' + st + '</td>' +
-      '<td><label><input type="checkbox" ' + (t.terminal ? 'checked ' : '') + (live ? '' : 'disabled ') +
-      'onchange="tokAction(\'' + t.jti + '\', {terminal: this.checked})" aria-label="Terminal for ' + esc(t.sub) + '"> allowed</label></td>' +
-      '<td>' + (live ? '<button class="small" style="background:#b91c1c" onclick="if (confirm(\'Revoke ' + esc(t.sub) + '? It will have to pair again.\')) tokAction(\'' + t.jti + '\', {revoked: true})">Revoke</button>' : '') + '</td></tr>';
+      '<td><label><input type="checkbox" data-term="' + esc(t.jti) + '" ' + (t.terminal ? 'checked ' : '') + (live ? '' : 'disabled ') +
+      'aria-label="Terminal for ' + esc(t.sub) + '"> allowed</label></td>' +
+      '<td>' + (live ? '<button class="small" style="background:#b91c1c" data-revoke="' + esc(t.jti) + '" data-name="' + esc(t.sub) + '">Revoke</button>' : '') + '</td></tr>';
   });
   document.getElementById('toks').innerHTML = rows.join('') || '<tr><td colspan=6 class="muted">No device has paired yet.</td></tr>';
+  document.querySelectorAll('[data-term]').forEach(c => c.onchange = () => tokAction(c.dataset.term, {terminal: c.checked}));
+  document.querySelectorAll('[data-revoke]').forEach(b => b.onclick = () => {
+    if (confirm('Revoke ' + b.dataset.name + '? It will have to pair again.')) tokAction(b.dataset.revoke, {revoked: true});
+  });
 }
 loadToks();
 </script>
