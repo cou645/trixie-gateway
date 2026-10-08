@@ -1,9 +1,15 @@
 # trixie-gateway — notes for AI agents
 
-aiohttp gateway (PC side of the TrXi-Ctrl phone app). Runs as systemd
-`trixie-gateway.service` on :8772 from this directory in `/root/pyqt6-venv`
-(`systemctl restart trixie-gateway` to load changes — drops phone sessions).
-`../trixie-gateway-pro` is the licensed variant: mirror every change there too.
+aiohttp gateway (PC side of the TrXi-Ctrl phone/desktop app). Runs as systemd
+`trixie-gateway.service` on :8772 from this directory in `/root/pyside6-venv`
+(`systemctl restart trixie-gateway` to load changes -- drops phone sessions).
+
+**One codebase for free and Pro (merged 2026-10-08).** Pro = this repo plus
+`license_client.py` + `license_fingerprint.py` from the private
+`../trixie-gateway-pro` repo copied next to `gateway.py` (git-ignored here);
+`gateway.py` imports them if present and then enforces the licence. Never
+commit those two files to this public repo. Licence of this source:
+PolyForm Strict 1.0.0.
 
 ## Adding a feature
 1. Logic in `capabilities/<name>.py` (async functions; run blocking work with

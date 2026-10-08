@@ -13,6 +13,9 @@ aioice>=0.9
 dnspython>=2.6
 ifaddr>=0.2
 pyee>=12
+# Pro edition only (license_client.py from the private repo); harmless otherwise
+requests>=2.31
+PyJWT[crypto]>=2.8
 # Wayland/wlroots backend (platforms/linux_wayland*.py) -- only loaded when
 # platforms.LINUX_SESSION == "wayland". Also needs /dev/uinput read/write
 # access, and a compositor that implements ext-image-copy-capture-v1 /

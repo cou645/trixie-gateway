@@ -1,7 +1,7 @@
 #!/root/pyside6-venv/bin/python3
 """Desktop control panel for the gateway service: start / stop / restart,
-switch between the free and Pro units (they Conflict= each other), and show
-the phone pairing QR (from /yay/network/gateway_qr, loopback-only).
+show the phone pairing QR (from /yay/network/gateway_qr, loopback-only) and
+tail its log. Free and Pro are one codebase and one service since the merge.
 
   /root/pyside6-venv/bin/python3 gateway_manager.py
 """
@@ -13,11 +13,11 @@ import webbrowser
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout,
                                QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
                                QWidget)
 
-UNITS = {"Pro": "trixie-gateway-pro.service", "Free": "trixie-gateway.service"}
+UNIT = "trixie-gateway.service"
 BASE = "http://127.0.0.1:8772"
 
 
@@ -30,8 +30,6 @@ class Manager(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Gateway Manager")
-        self.unit = QComboBox()
-        self.unit.addItems(UNITS)
         self.status = QLabel()
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.qr = QLabel("QR appears once the gateway is running")
@@ -46,8 +44,6 @@ class Manager(QWidget):
         self.log.setMaximumBlockCount(500)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Service:"))
-        top.addWidget(self.unit)
         for text, fn in (("Start", lambda: self.ctl("start")),
                          ("Stop", lambda: self.ctl("stop")),
                          ("Restart", lambda: self.ctl("restart")),
@@ -73,22 +69,13 @@ class Manager(QWidget):
         lay.addWidget(hint)
         lay.addWidget(self.log, 1)
 
-        # preselect whichever unit is running
-        for name, unit in UNITS.items():
-            if sh("systemctl", "is-active", unit)[1] == "active":
-                self.unit.setCurrentText(name)
-        self.unit.currentTextChanged.connect(self.refresh)
         self.timer = QTimer(self, interval=3000, timeout=self.refresh)
         self.timer.start()
         self.refresh()
         self.load_qr()
 
-    def current(self):
-        return UNITS[self.unit.currentText()]
-
     def ctl(self, action):
-        # Start/restart pulls in the chosen unit; Conflicts= stops the other.
-        rc, out = sh("systemctl", action, self.current())
+        rc, out = sh("systemctl", action, UNIT)
         if rc:
             self.status.setText(f"systemctl {action} failed: {out}")
         self.refresh()
@@ -96,9 +83,8 @@ class Manager(QWidget):
             QTimer.singleShot(2500, self.load_qr)  # give aiohttp time to bind
 
     def refresh(self):
-        states = {n: sh("systemctl", "is-active", u)[1] for n, u in UNITS.items()}
-        self.status.setText("   ".join(f"{n}: <b>{s}</b>" for n, s in states.items()))
-        self.log.setPlainText(sh("journalctl", "-u", self.current(), "-n", "200",
+        self.status.setText(f"{UNIT}: <b>{sh('systemctl', 'is-active', UNIT)[1]}</b>")
+        self.log.setPlainText(sh("journalctl", "-u", UNIT, "-n", "200",
                                  "--no-pager", "-o", "short-iso")[1])
         self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
 

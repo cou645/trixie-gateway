@@ -258,6 +258,13 @@ recurring with `/etc/NetworkManager/conf.d/99-tailscale-unmanaged.conf`:
 
 then `nmcli general reload conf`.
 
+## Editions
+
+Free and Pro are the same code. Pro builds add the licence-check files
+(`license_client.py`, `license_fingerprint.py`, kept in a private repo); when
+they are present the gateway requires an active Pro licence, otherwise it
+runs as the free edition. There are no Pro-only features yet.
+
 ## Disclaimer — use at your own risk
 
 trixie-gateway gives every paired device powerful control of this computer,

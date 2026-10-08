@@ -12,7 +12,7 @@ The PC-side counterpart to the yayos-apk phone app. Ported from fd64-gateway
 (the Fatdog64 fork — kept alongside as the frozen reference for the
 YaYOS-gateway-v2.sfs bundle):
   - Init    : systemd unit (trixie-gateway.service), not SysV rc.d
-  - Python  : /root/pysdide6-venv (system python3 3.13 has no aiohttp)
+  - Python  : /root/pyside6-venv (system python3 3.13 has no aiohttp)
   - Wi-Fi   : interface auto-detected (was hard-coded wlan2)
   - Paths   : ~/.config/trixie-gateway/config.json (legacy ~/.yayos/* still read);
               data root resolves /mnt/sda2 -> /aufs/devbase
@@ -49,6 +49,14 @@ from capability_broker import CapabilityBroker
 from semantic_journal import SemanticJournal
 from providers.router import ProviderRouter
 from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules, app_updates
+
+# Pro edition: license_client.py / license_fingerprint.py live in the private
+# trixie-gateway-pro repo and are copied next to this file for Pro builds.
+# Without them this is the free edition (identical features today).
+try:
+    import license_client
+except ImportError:
+    license_client = None
 
 LOG = logging.getLogger("trixie-gateway")
 
@@ -1728,6 +1736,31 @@ def main():
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
+    # Pro edition gate (only when license_client.py is present, see the
+    # import above). Same tier number ("2", PC software) and backend as
+    # Kameleon Presenter's license check. Hard gate, no offline trial:
+    # request_or_refresh_token keeps a still-valid cached token across a
+    # backend hiccup on its own.
+    if license_client is None:
+        LOG.info("edition: free")
+    elif os.environ.get("TRIXIE_GATEWAY_PRO_DEV_SKIP_LICENSE") == "1":
+        # Local testing only, while license-backend isn't deployed yet --
+        # never set this for a real install. Loud on purpose.
+        LOG.warning(
+            "edition: Pro -- DEV MODE: license check SKIPPED "
+            "(TRIXIE_GATEWAY_PRO_DEV_SKIP_LICENSE=1). Unset this for anything real.")
+    elif not license_client.request_or_refresh_token(2):
+        LOG.error(
+            "trixie-gateway Pro requires an active Tier 2 (PC software) "
+            "license for this device (%s). Manage/purchase at %s -- or remove "
+            "license_client.py to run the free edition.",
+            license_client.state.last_denial_reason or "backend unreachable",
+            license_client.LICENSE_BACKEND_URL,
+        )
+        raise SystemExit(1)
+    else:
+        LOG.info("edition: Pro (licensed)")
 
     gw = TrixieGateway(args.config, wifi_iface=args.wifi_iface)
 

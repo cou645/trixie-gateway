@@ -6,3 +6,7 @@ build/
 dist/
 *.pyc
 __pycache__/
+
+# Pro edition files: kept in the private trixie-gateway-pro repo, never here
+license_client.py
+license_fingerprint.py
