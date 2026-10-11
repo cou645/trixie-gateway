@@ -2,7 +2,7 @@
 # Dependabot proposes updates weekly (.github/dependabot.yml).
 # trixie-gateway runtime deps — install into /root/pyqt6-venv
 #   /root/pyqt6-venv/bin/pip install -r requirements.txt
-aiohttp==3.14.3
+aiohttp==3.14.4
 aiortc==1.15.0
 av==17.1.0
 # cryptography 49+ ships no macOS Intel wheel, so pip builds it from source
