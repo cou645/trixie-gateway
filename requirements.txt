@@ -17,7 +17,7 @@ ifaddr==0.2.0
 pyee==14.0.0
 # Pro edition only (license_client.py from the private repo); harmless otherwise
 requests==2.34.2
-PyJWT[crypto]==2.13.0
+PyJWT[crypto]==2.15.1
 # Wayland/wlroots backend (platforms/linux_wayland*.py) -- only loaded when
 # platforms.LINUX_SESSION == "wayland". Also needs /dev/uinput read/write
 # access, and a compositor that implements ext-image-copy-capture-v1 /
