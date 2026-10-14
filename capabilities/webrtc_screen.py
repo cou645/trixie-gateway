@@ -34,7 +34,8 @@ import time
 
 import av
 from aiortc import RTCPeerConnection, RTCSessionDescription, AudioStreamTrack, VideoStreamTrack
-from PIL import ImageDraw
+import numpy as np
+from PIL import Image, ImageDraw
 
 from platforms import backend as _backend
 
@@ -56,21 +57,33 @@ def _draw_peer_cursors(frame: av.VideoFrame, real_w: int, real_h: int) -> av.Vid
     session can see who's pointing where. The real OS-level cursor stays a
     single shared resource -- this is purely a visual aid on the outgoing
     stream, not independent per-device control (this box's compositor has
-    no multi-seat support to make that real)."""
+    no multi-seat support to make that real).
+
+    Only with two or more devices (one device already sees the real
+    cursor), and only on a small patch round each marker: a whole-frame
+    PIL round trip cost ~27% of a core at 2256x1504@20."""
     from capabilities import desktop_input
     cursors = desktop_input.peer_cursors
-    if not cursors or not real_w or not real_h:
+    if len(cursors) < 2 or not real_w or not real_h \
+            or frame.format.name not in ("bgr0", "bgra"):
         return frame
-    img = frame.to_image()
-    draw = ImageDraw.Draw(img)
-    sx, sy = img.width / real_w, img.height / real_h
+    plane = frame.planes[0]
+    pixels = np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size // 4, 4)
+    sx, sy = frame.width / real_w, frame.height / real_h
     for i, (device, (x, y)) in enumerate(sorted(cursors.items())):
-        color = _CURSOR_COLORS[i % len(_CURSOR_COLORS)]
-        fx, fy = x * sx, y * sy
-        r = 8
-        draw.ellipse([fx - r, fy - r, fx + r, fy + r], outline=color, width=3)
-        draw.text((fx + r + 2, fy - r), device[:16], fill=color)
-    return av.VideoFrame.from_image(img)
+        r, g, b = _CURSOR_COLORS[i % len(_CURSOR_COLORS)]
+        fx, fy = int(x * sx), int(y * sy)
+        x0, y0 = max(fx - 12, 0), max(fy - 12, 0)
+        x1, y1 = min(fx + 150, frame.width), min(fy + 12, frame.height)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        patch = Image.fromarray(np.ascontiguousarray(pixels[y0:y1, x0:x1, 2::-1]))   # BGR -> RGB
+        draw = ImageDraw.Draw(patch)
+        cx, cy, rad = fx - x0, fy - y0, 8
+        draw.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], outline=(r, g, b), width=3)
+        draw.text((cx + rad + 2, cy - rad), device[:16], fill=(r, g, b))
+        pixels[y0:y1, x0:x1, 2::-1] = np.asarray(patch)
+    return frame
 
 
 def _clone_frame(frame: av.VideoFrame) -> av.VideoFrame:

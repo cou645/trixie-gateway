@@ -28,31 +28,25 @@ import weakref
 from aiortc import rtcrtpsender
 from aiortc.codecs import h264 as _h264
 
+try:
+    from capabilities import gpu_video
+except ImportError:            # imported directly (tests put capabilities/ on sys.path)
+    import gpu_video
+
 LOG = logging.getLogger("trixie-gateway.vaapi")
-DEVICE = "/dev/dri/renderD128"
 KEYFRAME_EVERY = 30        # frames: a phone's keyframe request is met within ~1 s
 RESTART_MIN_GAP = 5.0      # s between bitrate-driven encoder restarts
-_ok = None
 
 
 def vaapi_h264_ok() -> bool:
-    """True if h264_vaapi is safe and works here (probed once)."""
-    global _ok
-    if _ok is None:
-        _ok = False
-        try:
-            with open("/sys/module/i915/parameters/enable_guc") as f:
-                guc = int(f.read())   # -1 = auto (HuC off); -1 & 3 is truthy, hence guc > 0
-            if guc > 0 and guc & 3 == 3:
-                _ok = subprocess.run(
-                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-vaapi_device", DEVICE,
-                     "-f", "lavfi", "-i", "testsrc2=s=256x144:d=0.2", "-vf", "format=nv12,hwupload",
-                     "-c:v", "h264_vaapi", "-low_power", "1", "-f", "null", "-"],
-                    capture_output=True, timeout=15).returncode == 0
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            pass
-        LOG.info("VAAPI H.264 for screen share: %s", "enabled" if _ok else "off (software encoder)")
-    return _ok
+    """True if there's a hardware H.264 encoder this module drives (Intel/AMD
+    VAAPI or NVIDIA NVENC — chosen in gpu_video, with Intel's i915.enable_guc=3
+    safety rule) — the name is historical."""
+    ok = gpu_video.encoder() in ("h264_vaapi", "h264_nvenc")
+    if not getattr(vaapi_h264_ok, "_logged", False):
+        vaapi_h264_ok._logged = True
+        LOG.info("hardware H.264 for screen share: %s", gpu_video.encoder() if ok else "off (software encoder)")
+    return ok
 
 
 def _read_access_units(stdout, out: queue.Queue):
@@ -68,12 +62,22 @@ def _read_access_units(stdout, out: queue.Queue):
         out.put(buf)
 
 
+def _rgb_bytes(frame):
+    """A packed 4-byte-per-pixel frame's pixels without row padding."""
+    plane, row = frame.planes[0], frame.width * 4
+    if plane.line_size == row:
+        return bytes(plane)
+    data = memoryview(plane)
+    return b"".join(data[y * plane.line_size:y * plane.line_size + row] for y in range(frame.height))
+
+
 class VaapiH264Encoder(_h264.H264Encoder):
     def __init__(self):
         super().__init__()
         self._proc = None
         self._aus: queue.Queue = queue.Queue()
         self._size = None
+        self._pix = None
         self._kbps = 0
         self._started = 0.0
         self._software = False
@@ -83,39 +87,42 @@ class VaapiH264Encoder(_h264.H264Encoder):
             self._proc.kill()
             self._proc = None
 
-    def _start(self, w, h):
+    def _start(self, w, h, pix):
         self._stop()
         self._kbps = self.target_bitrate // 1000
+        # RGB screen frames go to the GPU as they are and are converted there
+        # (VAAPI: scale_vaapi with out_range=tv; NVENC takes bgr0 itself).
+        up = gpu_video.upload("rgb" if pix != "nv12" else "nv12")
         self._proc = subprocess.Popen(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-f", "rawvideo", "-pix_fmt", "nv12", "-s", f"{w}x{h}", "-r", str(_h264.MAX_FRAME_RATE),
-             "-i", "pipe:0", "-vaapi_device", DEVICE, "-vf", "hwupload",
-             "-c:v", "h264_vaapi", "-low_power", "1", "-async_depth", "1", "-bf", "0",
-             "-profile:v", "constrained_baseline", "-aud", "1", "-g", str(KEYFRAME_EVERY),
-             "-rc_mode", "CBR", "-b:v", f"{self._kbps}k", "-maxrate", f"{self._kbps}k",
-             "-bufsize", f"{self._kbps // 2}k",          # ~0.5 s: keeps frame sizes even
+             "-f", "rawvideo", "-pix_fmt", pix, "-s", f"{w}x{h}", "-r", str(_h264.MAX_FRAME_RATE),
+             "-i", "pipe:0", *(["-vf", up] if up else []),
+             *gpu_video.realtime_h264_args(self._kbps, KEYFRAME_EVERY),
              "-flush_packets", "1", "-f", "h264", "pipe:1"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self._aus = queue.Queue()
         threading.Thread(target=_read_access_units, args=(self._proc.stdout, self._aus),
                          daemon=True).start()
         weakref.finalize(self, self._proc.kill)
-        self._size, self._started = (w, h), time.monotonic()
-        LOG.info("VAAPI H.264 encoder: %dx%d @ %d kbps", w, h, self._kbps)
+        self._size, self._pix, self._started = (w, h), pix, time.monotonic()
+        LOG.info("%s encoder: %dx%d %s @ %d kbps", gpu_video.encoder(), w, h, pix, self._kbps)
 
     def _encode_frame(self, frame, force_keyframe):
         if self._software:
             yield from super()._encode_frame(frame, force_keyframe)
             return
         w, h = frame.width & ~1, frame.height & ~1
+        rgb = frame.format.name in ("bgr0", "bgra") and (w, h) == (frame.width, frame.height)
+        pix = "bgr0" if rgb else "nv12"
         drift = abs(self.target_bitrate // 1000 - self._kbps) / max(self._kbps, 1)
-        if (self._proc is None or (w, h) != self._size
+        if (self._proc is None or (w, h) != self._size or pix != self._pix
                 or (drift > 0.3 and time.monotonic() - self._started > RESTART_MIN_GAP)):
-            self._start(w, h)
+            self._start(w, h, pix)
         try:
             if self._proc.poll() is not None:   # died on its own: don't restart-loop a failing GPU
                 raise OSError(f"ffmpeg exited with {self._proc.returncode}")
-            self._proc.stdin.write(frame.reformat(width=w, height=h, format="nv12").to_ndarray().tobytes())
+            self._proc.stdin.write(_rgb_bytes(frame) if rgb else
+                                   frame.reformat(width=w, height=h, format="nv12").to_ndarray().tobytes())
             self._proc.stdin.flush()
         except (BrokenPipeError, OSError, ValueError) as e:
             LOG.warning("VAAPI encoder failed (%s) — falling back to software H.264", e)
