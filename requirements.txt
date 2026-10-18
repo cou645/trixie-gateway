@@ -12,7 +12,7 @@ cryptography==50.0.1 ; sys_platform != "darwin" or platform_machine != "x86_64"
 cryptography==48.0.1 ; sys_platform == "darwin" and platform_machine == "x86_64"
 pylibsrtp==1.0.0
 aioice==0.10.2
-dnspython==2.8.0
+dnspython==2.9.0
 ifaddr==0.2.0
 pyee==14.0.0
 # Pro edition only (license_client.py from the private repo); harmless otherwise
