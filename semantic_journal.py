@@ -40,6 +40,7 @@ KNOWN_TYPES = {
     "bluetooth_power", "bluetooth_connect", "bluetooth_disconnect",
     "bluetooth_pair", "bluetooth_remove",
     "terminal_exec",
+    "wifi_manager",
     "webrtc_offer", "webrtc_close",
     "device_paired", "clipboard_set", "clipboard_delete", "clipboard_save",
     # security events (ISO 27001 gap G7)

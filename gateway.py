@@ -53,6 +53,7 @@ import tls_cert
 import root_helper
 from providers.router import ProviderRouter
 from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules, app_updates
+from capabilities import wifi_manager
 
 # Pro edition: license_client.py / license_fingerprint.py live in the private
 # trixie-gateway-pro repo and are copied next to this file for Pro builds.
@@ -259,7 +260,8 @@ _FEATURE_ROUTES = {
 # normal account (safer: a device's commands only reach that account), so
 # these answer a clear 403 instead of failing deep inside iptables/iwlist
 # (ISO 27001 gap G6).
-_ROOT_ROUTES = [(None, "/yay/firewall"), ("PUT", "/yay/layers/"), (None, "/yay/network/wifi")]
+_ROOT_ROUTES = [(None, "/yay/firewall"), ("PUT", "/yay/layers/"), (None, "/yay/network/wifi"),
+                (None, "/yay/network/wm/")]
 
 
 def _needs_root(req: web.Request) -> bool:
@@ -499,6 +501,9 @@ class TrixieGateway:
         app.router.add_get( "/yay/network/wifi/scan",       self._wifi_scan)
         app.router.add_post("/yay/network/wifi/connect",    self._wifi_connect)
         app.router.add_post("/yay/network/wifi/disconnect", self._wifi_disconnect)
+        # Wi-Fi Manager: AirBlit, Tailscale exit node / Funnel, USB Share
+        for (method, path) in wifi_manager.ROUTES:
+            app.router.add_route(method, path, self._wifi_manager)
         # Media
         app.router.add_get( "/yay/media/sessions",      self._media_sessions)
         app.router.add_get( "/yay/media/status",        self._media_status)
@@ -986,6 +991,18 @@ class TrixieGateway:
         if ok:
             self.journal.append("wifi_connect", ssid)
         return web.json_response({"ok": ok, "ssid": ssid, "output": msg})
+
+    async def _wifi_manager(self, req: web.Request) -> web.Response:
+        """/yay/network/wm/*: Wi-Fi Manager's controls (wifi-manager ctl)."""
+        fn = wifi_manager.ROUTES[(req.method, req.path)]
+        body = await req.json() if req.can_read_body else {}
+        try:
+            status, out = await fn(body, dict(req.query))
+        except (ValueError, TypeError) as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+        if req.method == "POST" and out.get("ok"):
+            self.journal.append("wifi_manager", f"{req.path.rsplit('/', 1)[-1]}: {out.get('message', '')}")
+        return web.json_response(out, status=status)
 
     async def _wifi_disconnect(self, req: web.Request) -> web.Response:
         body  = await req.json()

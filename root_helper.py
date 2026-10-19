@@ -180,6 +180,11 @@ ROUTES = {
 }
 
 
+def _wifi_manager_route(method, path):
+    from capabilities import wifi_manager
+    return wifi_manager.ROUTES.get((method, path))
+
+
 async def dispatch(method: str, path: str, body: dict, query: dict) -> tuple[int, dict]:
     try:
         if method == "PUT" and path.startswith("/yay/layers/"):
@@ -188,6 +193,10 @@ async def dispatch(method: str, path: str, body: dict, query: dict) -> tuple[int
                 raise ValueError(f"invalid layer: {name!r}")
             return 200, await _set_layer(body, query, name)
         fn = ROUTES.get((method, path))
+        if fn is None and path.startswith("/yay/network/wm/"):
+            wm = _wifi_manager_route(method, path)      # these return (status, body)
+            if wm is not None:
+                return await wm(body, query)
         if fn is None:
             return 404, {"ok": False, "error": "not a helper route"}
         return 200, await fn(body, query)
