@@ -42,7 +42,16 @@ def new_key() -> None:
 
 
 def sign(path: str) -> None:
-    key = serialization.load_pem_private_key(KEY.read_bytes(), password=None)
+    pem = KEY.read_bytes()
+    try:
+        key = serialization.load_pem_private_key(pem, password=None)
+    except TypeError:  # passphrase-protected key
+        import getpass
+        pw = getpass.getpass(f"Passphrase for {KEY}: ")
+        try:
+            key = serialization.load_pem_private_key(pem, password=pw.encode())
+        except ValueError:
+            sys.exit("wrong passphrase (or the key file is damaged)")
     data = pathlib.Path(path).read_bytes()
     sig = key.sign(data)
     key.public_key().verify(sig, data)          # never publish a bad signature
