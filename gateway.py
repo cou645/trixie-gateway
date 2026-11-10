@@ -1780,7 +1780,7 @@ def _parse_ip_addr(out: str) -> list[dict]:
             continue
         if current is None:
             continue
-        # MAC: "    link/ether e8:f4:08:e5:dc:c9 ..."
+        # MAC: "    link/ether 00:00:5e:00:53:01 ..."
         m = re.match(r"\s+link/\w+\s+([0-9a-f:]{17})", line)
         if m:
             current["mac"] = m.group(1)
