@@ -31,7 +31,7 @@ KNOWN_TYPES = {
     "net_connect", "net_disconnect", "wifi_connect", "wifi_disconnect",
     "ai_query", "capability_issue", "boot", "shutdown", "remaster",
     "brightness_change", "volume_change", "mute_change",
-    "media_open", "media_source", "media_kill",
+    "media_open", "media_source", "media_kill", "cmc_play",
     "app_launch", "app_kill",
     "pm",
     "lock", "unlock",
