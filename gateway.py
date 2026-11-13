@@ -54,6 +54,7 @@ import root_helper
 from providers.router import ProviderRouter
 from capabilities import system_info, layer_control, brightness, audio, bluetooth, chat_history, desktop_input, lockscreen, firewall, media, personal_manager, terminal, webrtc_screen, wm, apps, clipboard, clip_rules, app_updates
 from capabilities import wifi_manager
+from capabilities import cmc
 
 # Pro edition: license_client.py / license_fingerprint.py live in the private
 # trixie-gateway-pro repo and are copied next to this file for Pro builds.
@@ -253,6 +254,7 @@ _FEATURE_ROUTES = {
     "/yay/brightness":  "brightness",
     "/yay/network":     "network",
     "/yay/media":       "media",
+    "/yay/cmc":         "media",
 }
 
 
@@ -504,6 +506,9 @@ class TrixieGateway:
         # Wi-Fi Manager: AirBlit, Tailscale exit node / Funnel, USB Share
         for (method, path) in wifi_manager.ROUTES:
             app.router.add_route(method, path, self._wifi_manager)
+        # CMC remote (TrXi-Ctrl's CMC tab): relayed to CMC's own control socket
+        for (method, path) in cmc.ROUTES:
+            app.router.add_route(method, path, self._cmc)
         # Media
         app.router.add_get( "/yay/media/sessions",      self._media_sessions)
         app.router.add_get( "/yay/media/status",        self._media_status)
@@ -1002,6 +1007,23 @@ class TrixieGateway:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
         if req.method == "POST" and out.get("ok"):
             self.journal.append("wifi_manager", f"{req.path.rsplit('/', 1)[-1]}: {out.get('message', '')}")
+        return web.json_response(out, status=status)
+
+    async def _cmc(self, req: web.Request) -> web.Response:
+        """/yay/cmc/*: the phone's CMC remote (capabilities/cmc.py)."""
+        fn = cmc.ROUTES[(req.method, req.path)]
+        try:
+            body = await req.json() if req.can_read_body else {}
+        except ValueError:
+            return web.json_response({"ok": False, "error": "body must be JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "body must be a JSON object"}, status=400)
+        try:
+            status, out = await fn(body, dict(req.query))
+        except (ValueError, TypeError) as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+        if out.get("ok") and req.path.endswith(("/play", "/play_all")):
+            self.journal.append("cmc_play", body.get("url") or body.get("key") or "watch list")
         return web.json_response(out, status=status)
 
     async def _wifi_disconnect(self, req: web.Request) -> web.Response:
