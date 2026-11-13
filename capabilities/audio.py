@@ -350,12 +350,26 @@ async def _amixer_info(ctl: str, card: str | None = None) -> dict | None:
     }
 
 
+def _pactl_env() -> dict | None:
+    """pactl run from the systemd service has no XDG_RUNTIME_DIR, so it can't
+    find the session's sound server and the gateway fell back to amixer (and
+    read the headphone-jack sensor as the output). Point it at this user's
+    PulseAudio / pipewire-pulse socket when the session variables are missing."""
+    if os.environ.get("PULSE_SERVER") or os.environ.get("XDG_RUNTIME_DIR"):
+        return None
+    sock = f"/run/user/{os.getuid()}/pulse/native"
+    if not os.path.exists(sock):
+        return None
+    return {**os.environ, "PULSE_SERVER": f"unix:{sock}", "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+
+
 async def _run(cmd: list[str], timeout: int = 5) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_pactl_env() if cmd and cmd[0] == "pactl" else None,
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
